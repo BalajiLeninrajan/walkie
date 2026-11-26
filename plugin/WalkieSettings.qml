@@ -35,7 +35,7 @@ PluginSettings {
     StringSetting {
         settingKey: "statePath"
         label: "State file"
-        description: "The file walkie writes its state to. Leave empty for $XDG_RUNTIME_DIR/walkie/state."
+        description: "The file walkie writes its state to, read once when the plugin starts. Leave empty for $XDG_RUNTIME_DIR/walkie/state."
         placeholder: "$XDG_RUNTIME_DIR/walkie/state"
         defaultValue: ""
     }

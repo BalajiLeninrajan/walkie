@@ -3,10 +3,10 @@
 A [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell) plugin that shows a small pill near the bottom of the screen while walkie is dictating.
 
 - While recording, the pill shows a mic and a level meter that follows your voice. Once a tap locks the recording, the mic turns into a lock and the pill gets an outline, so you know another press finishes it.
-- While transcribing, it shows three moving dots and "Transcribing".
+- While transcribing, it shows three dots lit in turn and "Transcribing".
 - Otherwise it's hidden, and no window exists. The pill never takes keyboard focus and clicks go through it.
 
-The plugin only reads the state file walkie writes, `$XDG_RUNTIME_DIR/walkie/state`. It needs no flags on walkie and talks to it no other way.
+walkie sends its state to the plugin over `$XDG_RUNTIME_DIR/walkie-indicator.sock`, which the plugin listens on. The plugin also reads walkie's state file, `$XDG_RUNTIME_DIR/walkie/state`, once when it starts. walkie needs no flags for either.
 
 ## Setup
 
@@ -31,14 +31,15 @@ dms ipc call plugins enable walkie
 |---|---|---|
 | Bottom margin | 64 px | Distance from the bottom edge of the screen to the pill |
 | Screens | All screens | Show the pill on every screen, or only on the one with focus |
-| State file | `$XDG_RUNTIME_DIR/walkie/state` | Where walkie writes its state |
+| State file | `$XDG_RUNTIME_DIR/walkie/state` | Where walkie writes its state; read once when the plugin starts |
 
-## How it reads the state file
+## How it gets walkie's state
 
-The file holds one line such as `v=1 state=recording level=0.42 locked=0`. walkie rewrites it in place every 40 ms while recording and every 250 ms otherwise, and leaves it at `idle` between dictations.
+Each update is one line such as `v=1 state=recording level=0.42 locked=0`, the same record walkie writes to its state file (the format is in the main README). walkie connects at the start of each dictation and sends a line every 40 ms while recording and every 250 ms otherwise.
 
-- If the file doesn't exist yet, the plugin checks again every 2 s until it shows up.
-- If a non-idle state goes 2 s without a rewrite, the plugin assumes walkie died and hides the pill.
+- The plugin doesn't watch the state file: reloading it 25 times a second cost DMS about 7% of a core on a Ryzen 7 5700U, against 3% for reading the same records from the socket.
+- The meter moves at most every 70 ms, showing the loudest level since it last moved. Every repaint costs DMS CPU, and 12 updates a second still look live.
+- If a non-idle state goes 2 s without an update, the plugin assumes walkie died and hides the pill.
 - The plugin reads format version 1. For any other version it shows nothing and logs one warning, so update walkie or the plugin to match. Unknown keys are ignored.
 
 ## Limits

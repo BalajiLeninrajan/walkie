@@ -8,7 +8,8 @@ import qs.DCommon.Widgets
 import qs.Modules.Plugins
 
 // Shows a pill near the bottom of the screen while walkie records or transcribes.
-// walkie writes its state to a small file; this reads it on every change.
+// walkie streams its state records to a socket this plugin listens on. The
+// state file is read once at startup, in case DMS restarted mid-dictation.
 PluginComponent {
     id: root
 
@@ -35,6 +36,8 @@ PluginComponent {
     readonly property int historyLength: 4
     property var history: [0, 0, 0, 0]
     property real lastShift: 0
+    // Loudest level since the meter last moved.
+    property real pendingPeak: 0
 
     function applyRecord(text) {
         const fields = {};
@@ -70,42 +73,43 @@ PluginComponent {
         }
         staleTimer.restart();
 
-        // One write can raise two change events. Shift at most once per writer tick.
+        // The meter moves at most every 70 ms (about every other record).
+        // Each repaint costs DMS CPU, and 12 updates a second still read as live.
+        if (phase !== "recording")
+            return;
+        pendingPeak = Math.max(pendingPeak, level);
         const now = Date.now();
-        if (phase === "recording" && now - lastShift >= 30) {
+        if (now - lastShift >= 70) {
             // Treat levels under 0.2 (-48 dBFS) as silence and stretch the rest
             // over the bar height, so normal speech fills most of it.
-            const shown = Math.max(0, Math.min(1, (level - 0.2) / 0.6));
+            const shown = Math.max(0, Math.min(1, (pendingPeak - 0.2) / 0.6));
             history = [shown].concat(history.slice(0, historyLength - 1));
             lastShift = now;
+            pendingPeak = 0;
         }
     }
 
+    // Live updates: walkie connects here at the start of each dictation and
+    // sends every state record as one line. Reading a socket costs far less
+    // than reloading a FileView 25 times a second.
+    SocketServer {
+        active: true
+        path: Quickshell.env("XDG_RUNTIME_DIR") + "/walkie-indicator.sock"
+        handler: Socket {
+            parser: SplitParser {
+                onRead: line => root.applyRecord(line)
+            }
+        }
+    }
+
+    // Read once, not watched: re-reading on every change costs DMS several
+    // times more CPU than the stream. A missing file just means idle.
     FileView {
-        id: stateFile
         path: root.statePath
-        watchChanges: true
         printErrors: false
-        // The record is 64 bytes on tmpfs, so a blocking read is cheaper than a
-        // thread hop. callLater folds the double events one write can raise.
         blockLoading: true
-        onFileChanged: Qt.callLater(reload)
-        onLoaded: {
-            retryTimer.stop();
-            root.applyRecord(text());
-        }
-        onLoadFailed: err => {
-            // walkie creates the file on its first dictation.
-            root.phase = "idle";
-            retryTimer.start();
-        }
-    }
-
-    Timer {
-        id: retryTimer
-        interval: 2000
-        repeat: true
-        onTriggered: stateFile.reload()
+        onLoaded: root.applyRecord(text())
+        onLoadFailed: err => root.phase = "idle"
     }
 
     // walkie rewrites the file every 250 ms or faster during a session.
@@ -266,19 +270,15 @@ PluginComponent {
                                 height: meter.minBar + (meter.maxBar - meter.minBar) * value
                                 radius: 2
                                 color: Theme.primary
-
-                                Behavior on height {
-                                    NumberAnimation {
-                                        duration: 90
-                                        easing.type: Easing.OutCubic
-                                    }
-                                }
+                                // No height animation: each frame costs DMS CPU, so
+                                // the bars repaint only when walkie sends a level.
                             }
                         }
                     }
                 }
 
-                // Transcribing: three dots that rise in turn, and a label.
+                // Transcribing: three dots lit in turn, and a label. The step timer
+                // repaints a few times a second instead of animating every frame.
                 Row {
                     id: transcribingRow
 
@@ -303,49 +303,35 @@ PluginComponent {
                         color: Theme.withAlpha(Theme.primary, 0.18)
 
                         Row {
+                            id: dots
+
+                            property int step: 0
+
                             anchors.centerIn: parent
                             spacing: 2
+
+                            Timer {
+                                interval: 280
+                                repeat: true
+                                running: win.visible && pill.transcribing
+                                onTriggered: dots.step = (dots.step + 1) % 4
+                                onRunningChanged: dots.step = 0
+                            }
 
                             Repeater {
                                 model: 3
 
                                 Rectangle {
-                                    id: dot
-
                                     required property int index
-                                    property real lift: 0
+                                    readonly property bool lit: dots.step === index + 1
 
                                     width: 5
                                     height: 5
                                     radius: 2.5
                                     color: Theme.primary
-                                    opacity: 0.5 + lift * 0.5
+                                    opacity: lit ? 1 : 0.4
                                     transform: Translate {
-                                        y: -dot.lift * 3.5
-                                    }
-
-                                    SequentialAnimation on lift {
-                                        running: win.visible && pill.transcribing
-                                        loops: Animation.Infinite
-
-                                        PauseAnimation {
-                                            duration: dot.index * 140
-                                        }
-                                        NumberAnimation {
-                                            from: 0
-                                            to: 1
-                                            duration: 260
-                                            easing.type: Easing.OutQuad
-                                        }
-                                        NumberAnimation {
-                                            from: 1
-                                            to: 0
-                                            duration: 260
-                                            easing.type: Easing.InQuad
-                                        }
-                                        PauseAnimation {
-                                            duration: (2 - dot.index) * 140 + 200
-                                        }
+                                        y: lit ? -2.5 : 0
                                     }
                                 }
                             }
