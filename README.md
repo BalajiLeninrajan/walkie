@@ -24,22 +24,49 @@ A tap shorter than `LOCK_MS` locks the recording instead, for hands-free dictati
 
 ## Install
 
-Fedora, as your user:
+walkie runs on Fedora 43 and 44 on x86_64, on any CPU with AVX2, FMA and F16C (Haswell or newer). As your user:
 
 ```sh
-git clone --recurse-submodules <this repo> ~/Documents/code/walkie
-cd ~/Documents/code/walkie
+curl -fsSL https://raw.githubusercontent.com/BalajiLeninrajan/walkie/main/install.sh | sh
+```
+
+This needs no compiler and no sudo. `install.sh` does the following:
+
+1. It asks the GitHub API for the latest release, downloads `walkie-<version>-x86_64-linux.tar.gz` and `SHA256SUMS`, and checks the tarball against `SHA256SUMS`. `WALKIE_VERSION=v0.2.0` picks a release instead.
+2. It installs the binary to `~/.local/bin/walkie`.
+3. It downloads [parakeet-tdt_ctc-110m-Q8_0.gguf](https://huggingface.co/handy-computer/parakeet-tdt_ctc-110m-gguf) (130 MB) into `~/.local/share/walkie/models/` and checks its SHA-256. A model that's already there and matches isn't downloaded again. The `unified` argument also fetches Hex's 0.6B model: `curl ... | sh -s -- unified`.
+4. It copies `plugin/` to `~/.config/dms/plugins/walkie` and enables it with `dms ipc call plugins enable walkie`. DMS 1.x used `~/.config/DankMaterialShell/plugins/` instead, and the script uses that path when only the old directory exists.
+5. It checks for `libpipewire-0.3.so.0`, `notify-send` and `wl-copy`, which a Fedora desktop usually has. It doesn't install them. If any are missing, it prints the command to run, such as `sudo dnf install libnotify wl-clipboard`.
+
+Run it again to upgrade.
+
+To install a release by hand, download the tarball and `SHA256SUMS` from the [releases page](https://github.com/BalajiLeninrajan/walkie/releases), then:
+
+```sh
+sha256sum -c --ignore-missing SHA256SUMS
+tar xzf walkie-0.1.0-x86_64-linux.tar.gz
+cd walkie-0.1.0-x86_64-linux
 ./install.sh
 ```
 
-`install.sh` does the following, which you can also do by hand:
+Run from an unpacked tarball, `install.sh` installs the files next to it and only downloads the model.
 
-1. `sudo dnf install gcc gcc-c++ cmake make git pkgconf-pkg-config pipewire-devel wl-clipboard libnotify`, plus `cargo rust` if you don't use rustup. Rust 1.85 or newer is required.
-2. `cargo build --release --locked`, with `CARGO_BUILD_JOBS=4` so the transcribe.cpp build doesn't run a small laptop out of memory, then `install -Dm755 target/release/walkie ~/.local/bin/walkie`.
-3. It downloads [parakeet-tdt_ctc-110m-Q8_0.gguf](https://huggingface.co/handy-computer/parakeet-tdt_ctc-110m-gguf) (130 MB) into `~/.local/share/walkie/models/` and checks its SHA-256. `./install.sh unified` also fetches Hex's 0.6B model.
-4. It copies `plugin/` to `~/.config/dms/plugins/walkie` and enables it with `dms ipc call plugins enable walkie`. DMS 1.x used `~/.config/DankMaterialShell/plugins/` instead, and the script uses that path when only the old directory exists.
+### From source
 
-ggml is compiled with `-march=native` for the machine that builds it. To build a binary for another machine, set `WALKIE_GGML_NATIVE=0`, which targets any x86-64 CPU with AVX2, FMA and F16C (Haswell or newer).
+```sh
+git clone --recurse-submodules https://github.com/BalajiLeninrajan/walkie ~/Documents/code/walkie
+cd ~/Documents/code/walkie
+./install.sh --from-source
+```
+
+In a checkout, `install.sh` without `--from-source` still installs the latest release. `--from-source` replaces the download with a build:
+
+1. `sudo dnf install gcc gcc-c++ cmake make git pkgconf-pkg-config pipewire-devel wl-clipboard libnotify`, plus `cargo rust` if you don't use rustup. Rust 1.85 or newer is required. `SKIP_DNF=1` skips this step.
+2. `cargo build --release --locked`, with `CARGO_BUILD_JOBS=4` so the transcribe.cpp build doesn't run a small laptop out of memory. It installs `target/release/walkie` to `~/.local/bin/walkie`.
+
+The model and plugin steps are the same as above.
+
+ggml is compiled with `-march=native` for the machine that builds it. To build a binary for another machine, set `WALKIE_GGML_NATIVE=0`, which targets any x86-64 CPU with AVX2, FMA and F16C. Release binaries are built this way.
 
 ## Kanata
 
@@ -140,9 +167,11 @@ Rules:
 git submodule update --init
 cargo build --release
 cargo test
-cargo clippy --all-targets   # pedantic lints are on in Cargo.toml
+cargo clippy --all-targets -- -D warnings   # pedantic lints are on in Cargo.toml
 cargo fmt --check
 ```
+
+CI (`.github/workflows/ci.yml`) runs the last three in a `fedora:43` container on pushes to main and on pull requests.
 
 The layout:
 
@@ -158,6 +187,8 @@ The layout:
 | `src/indicator.rs` | State file writer |
 | `src/ipc.rs`, `src/notify.rs`, `src/history.rs`, `src/text.rs`, `src/sound.rs`, `src/session_env.rs` | The rest |
 | `plugin/` | DMS plugin |
+| `scripts/dist.sh` | Builds and packages a release |
+| `.github/workflows/` | CI and releases |
 | `vendor/transcribe.cpp` | Submodule, pinned to a0729fa |
 
 The C shims keep transcribe.cpp's and PipeWire's structs on the C side, so there are no hand-written struct layouts in Rust. `build.rs` builds transcribe.cpp's static libraries with CMake. Set `TRANSCRIBE_DIR` to use another checkout.
@@ -166,6 +197,22 @@ Two environment variables exist for benchmarks:
 
 - `WALKIE_TEST_WAV=clip.wav` feeds a 16 kHz WAV in real time instead of the microphone, then silence until release.
 - `WALKIE_TEST_OUT=file` appends `<unix ms> <text>` to a file instead of typing.
+
+## Releasing
+
+`.github/workflows/release.yml` builds releases. It runs `scripts/dist.sh` in a `fedora:43` container, the oldest Fedora walkie supports, so the binary needs no newer glibc or libpipewire than that. ggml is built with `WALKIE_GGML_NATIVE=0`, and the script fails if the binary contains AVX-512 instructions.
+
+1. Bump `version` in `Cargo.toml`, and in `plugin/plugin.json` if the plugin changed. Run `cargo build` so `Cargo.lock` picks up the new version, since the release builds with `--locked`. Commit.
+2. Tag the commit and push the tag:
+
+   ```sh
+   git tag v0.2.0
+   git push origin main v0.2.0
+   ```
+
+The workflow fails if the tag doesn't match the version in `Cargo.toml`. Otherwise it publishes a GitHub release with the tarball, `SHA256SUMS`, and notes listing the commits since the previous tag.
+
+To try it without releasing, run the workflow by hand from the Actions tab or with `gh workflow run release.yml`. That run uploads the tarball, `SHA256SUMS` and the notes as an artifact of the run. `scripts/dist.sh` builds the tarball into `dist/` on your own machine, though only a `fedora:43` container gives you the same glibc and toolchain as the release.
 
 ## License
 
