@@ -2,8 +2,8 @@
 //!
 //! The file uses the same `KEY=value` shell syntax as the bash version, so an
 //! existing config keeps working. Supported: comments, `export KEY=...`,
-//! single quotes (literal), double quotes and bare words with `$VAR` and
-//! `${VAR}` expansion. `$DATA` is the data directory, and keys set earlier in
+//! single quotes (literal), double quotes and bare words with `$VAR`,
+//! `${VAR}` and `${VAR:-default}` expansion. `$DATA` is the data directory, and keys set earlier in
 //! the file can be referenced by later ones. Nothing is executed.
 
 use std::collections::HashMap;
@@ -153,7 +153,12 @@ impl Config {
             "THREADS" => self.threads = parse_num(v)?,
             "LOCK_MS" => self.lock_ms = parse_num(v)?,
             "TAIL_MS" => self.tail_ms = parse_num(v)?,
-            "MAX_SECONDS" => self.max_seconds = parse_num(v)?,
+            "MAX_SECONDS" => {
+                self.max_seconds = parse_num(v)?;
+                if self.max_seconds == 0 {
+                    return Err("must be at least 1".into());
+                }
+            }
             "SOUNDS" => self.sounds = parse_bool(v)?,
             "SOUND_DIR" => self.sound_dir = PathBuf::from(v),
             "SOUND_VOLUME" => {
@@ -204,8 +209,18 @@ fn parse_line(
     if line.is_empty() || line.starts_with('#') {
         return Ok(None);
     }
-    let line = line.strip_prefix("export ").map_or(line, str::trim_start);
-    let (key, rest) = line.split_once('=').ok_or("expected KEY=value")?;
+    let line = match line.strip_prefix("export") {
+        Some(rest) if rest.starts_with(char::is_whitespace) => rest.trim_start(),
+        _ => line,
+    };
+    let Some((key, rest)) = line.split_once('=') else {
+        // `export KEY` alone just marks a variable; nothing to set.
+        let bare = line.trim_end();
+        if !bare.is_empty() && bare.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Ok(None);
+        }
+        return Err("expected KEY=value".into());
+    };
     if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(format!("bad key {key:?}"));
     }
@@ -237,6 +252,7 @@ fn parse_value(s: &str, lookup: &impl Fn(&str) -> Option<String>) -> std::result
                         None => return Err("unterminated double quote".into()),
                     },
                     Some('$') => expand(&mut chars, &mut out, lookup)?,
+                    Some('`') => return Err("command substitution is not supported".into()),
                     Some(c) => out.push(c),
                     None => return Err("unterminated double quote".into()),
                 }
@@ -265,11 +281,26 @@ fn expand(
     lookup: &impl Fn(&str) -> Option<String>,
 ) -> std::result::Result<(), String> {
     let mut name = String::new();
+    let mut default = None;
     if chars.peek() == Some(&'{') {
         chars.next();
         loop {
             match chars.next() {
                 Some('}') => break,
+                Some(':') if chars.peek() == Some(&'-') => {
+                    chars.next();
+                    let mut d = String::new();
+                    loop {
+                        match chars.next() {
+                            Some('}') => break,
+                            Some('$') => expand(chars, &mut d, lookup)?,
+                            Some(c) => d.push(c),
+                            None => return Err("unterminated ${".into()),
+                        }
+                    }
+                    default = Some(d);
+                    break;
+                }
                 Some(c) if c.is_ascii_alphanumeric() || c == '_' => name.push(c),
                 Some(c) => return Err(format!("unsupported character {c:?} in ${{...}}")),
                 None => return Err("unterminated ${".into()),
@@ -289,7 +320,8 @@ fn expand(
     if name.is_empty() {
         out.push('$');
     } else {
-        out.push_str(&lookup(&name).unwrap_or_default());
+        let value = lookup(&name).filter(|v| !v.is_empty());
+        out.push_str(&value.or(default).unwrap_or_default());
     }
     Ok(())
 }
@@ -364,6 +396,24 @@ POSTPROC="$DATA/py/bin/python $DATA/bin/dictate-numbers"
         assert!(q("'open").is_err());
         assert!(q("$(id)").is_err());
         assert!(q("`id`").is_err());
+        assert!(q("\"`id`\"").is_err());
+        let none = |s: &str| parse_value(s, &|_: &str| None);
+        assert_eq!(none("${X:-fallback}").unwrap(), "fallback");
+        assert_eq!(none("\"${X:-$Y}/b\"").unwrap(), "/b");
+        assert_eq!(q("${X:-fallback}").unwrap(), "V");
+    }
+
+    #[test]
+    fn export_forms() {
+        let (cfg, w) = apply(
+            "export THREADS
+export\tTHREADS=3
+",
+        )
+        .unwrap();
+        assert!(w.is_empty());
+        assert_eq!(cfg.threads, 3);
+        assert_eq!(apply("MAX_SECONDS=0").unwrap_err().0, 1);
     }
 
     #[test]
