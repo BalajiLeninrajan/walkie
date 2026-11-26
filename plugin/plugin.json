@@ -1,0 +1,18 @@
+{
+    "id": "walkie",
+    "name": "Walkie",
+    "description": "A pill at the bottom of the screen that shows when walkie is recording or transcribing",
+    "version": "0.1.0",
+    "license": "MIT",
+    "author": "Balaji Leninrajan",
+    "icon": "mic",
+    "type": "daemon",
+    "capabilities": ["indicator"],
+    "component": "./WalkieIndicator.qml",
+    "settings": "./WalkieSettings.qml",
+    "requires_dms": ">=2.1.0",
+    "permissions": [
+        "settings_read",
+        "settings_write"
+    ]
+}
