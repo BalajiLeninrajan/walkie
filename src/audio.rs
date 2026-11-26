@@ -93,12 +93,22 @@ impl Sink {
         if chunk.is_empty() {
             return;
         }
-        let sum: f64 = chunk.iter().map(|&s| f64::from(s) * f64::from(s)).sum();
         let _ = self.first_ms.compare_exchange(0, crate::now_ms(), Ordering::Relaxed, Ordering::Relaxed);
-        let rms = (sum / chunk.len() as f64).sqrt() / 32768.0;
-        self.status.report_rms(rms as f32);
+        self.status.report_rms(ac_rms(chunk));
         self.samples.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend_from_slice(chunk);
     }
+}
+
+/// RMS of a chunk with its DC offset removed, as a fraction of full scale.
+/// Some microphones sit far from zero, and the offset isn't sound.
+fn ac_rms(chunk: &[i16]) -> f32 {
+    if chunk.is_empty() {
+        return 0.0;
+    }
+    let n = chunk.len() as f64;
+    let mean = chunk.iter().map(|&s| f64::from(s)).sum::<f64>() / n;
+    let var = chunk.iter().map(|&s| (f64::from(s) - mean).powi(2)).sum::<f64>() / n;
+    (var.sqrt() / 32768.0) as f32
 }
 
 unsafe extern "C" fn on_pcm(user: *mut c_void, samples: *const i16, n: u32) {
@@ -219,5 +229,18 @@ impl Beeper {
         if let Some(pw) = &self.pw {
             pw.wait_playback(Duration::from_millis(500));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ac_rms;
+
+    #[test]
+    fn ac_rms_ignores_dc_offset() {
+        assert!(ac_rms(&[7000; 1600]).abs() < 1e-6);
+        let square: Vec<i16> = (0..1600).map(|i| if i % 2 == 0 { 7000 + 3277 } else { 7000 - 3277 }).collect();
+        assert!((ac_rms(&square) - 0.1).abs() < 1e-3);
+        assert!(ac_rms(&[]).abs() < f32::EPSILON);
     }
 }
