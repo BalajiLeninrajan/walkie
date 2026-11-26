@@ -1,7 +1,5 @@
 # walkie
 
-over.
-
 Push-to-talk dictation for Wayland. Hold a key, talk, let go, and your words get typed into whatever window you're in.
 
 It runs on your CPU, needs no internet once installed, and uses no memory when you're not talking. A 15 second dictation shows up about a second after you let go, even on a modest laptop.
