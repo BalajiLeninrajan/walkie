@@ -102,6 +102,11 @@ if [ "$from_source" = 1 ]; then
     bin_src=$src/target/release/walkie
 else
     [ "$(uname -m)" = x86_64 ] || die "releases are x86_64 only; build a checkout with --from-source"
+    # Release builds use these. Without one, walkie dies with SIGILL at the
+    # first dictation, long after --version said all was well.
+    for f in sse4_2 avx2 fma f16c bmi2; do
+        grep -qw "$f" /proc/cpuinfo || die "this CPU lacks $f, which releases need; build a checkout with --from-source"
+    done
     for c in curl tar gzip sha256sum awk; do
         command -v "$c" >/dev/null || die "needs $c"
     done
