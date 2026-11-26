@@ -25,6 +25,8 @@ dms ipc call plugin-scan scan
 dms ipc call plugins enable walkie
 ```
 
+The scan finishes a moment after the command returns. If the enable answers `PLUGIN_NOT_FOUND`, run it again. `dms ipc` exits 0 either way, so read its reply.
+
 ## Settings
 
 | Setting | Default | |
