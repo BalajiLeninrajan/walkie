@@ -4,7 +4,9 @@
 
 mod config;
 mod error;
+mod history;
 mod machine;
+mod text;
 
 /// Milliseconds since the Unix epoch.
 #[must_use]
