@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # The same image the release builds in.
+    container: fedora:43
+    env:
+      # CMake reads these, so ccache caches the transcribe.cpp build. Its
+      # sources get fresh mtimes on every checkout, so caching target/ alone
+      # would rebuild it anyway.
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      - name: Install build dependencies
+        run: >-
+          dnf install -y --setopt=install_weak_deps=False
+          git gcc gcc-c++ cmake make pkgconf-pkg-config pipewire-devel
+          cargo rust rustfmt clippy ccache tar gzip zstd
+
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-fedora43-${{ github.sha }}
+          restore-keys: ccache-fedora43-
+
+      - run: cargo fmt --check
+
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+      - run: cargo test --locked
+
+      - run: ccache --show-stats
