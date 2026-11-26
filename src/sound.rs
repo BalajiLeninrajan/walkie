@@ -138,7 +138,7 @@ mod tests {
         for b in [Beep::Start, Beep::Stop, Beep::Lock, Beep::Error] {
             let p = b.load(Path::new("/nonexistent"), 0.5);
             assert_eq!(p.rate, 48000);
-            assert!(!p.samples.is_empty());
+            assert_ne!(p.samples, [] as [i16; 0]);
         }
     }
 }

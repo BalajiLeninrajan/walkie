@@ -349,7 +349,7 @@ mod tests {
     fn empty_file_keeps_defaults() {
         let (cfg, w) = apply("\n# comment\n   \n").unwrap();
         assert_eq!(cfg, Config::defaults(&dirs()));
-        assert!(w.is_empty());
+        assert_eq!(w, [] as [String; 0]);
     }
 
     #[test]
@@ -411,7 +411,7 @@ export\tTHREADS=3
 ",
         )
         .unwrap();
-        assert!(w.is_empty());
+        assert_eq!(w, [] as [String; 0]);
         assert_eq!(cfg.threads, 3);
         assert_eq!(apply("MAX_SECONDS=0").unwrap_err().0, 1);
     }
