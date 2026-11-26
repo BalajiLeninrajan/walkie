@@ -26,7 +26,7 @@ A tap shorter than `LOCK_MS` locks the recording instead, for hands-free dictati
 
 ## What install.sh does
 
-walkie runs on Fedora 43 and 44 on x86_64, on any CPU with AVX2, FMA, F16C and BMI2 (Haswell or newer). As your user:
+Release binaries run on x86_64 Linux with glibc 2.39 or newer, on any CPU with AVX2, FMA, F16C and BMI2 (Haswell or newer). As your user:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/BalajiLeninrajan/walkie/main/install.sh | sh
@@ -37,8 +37,9 @@ This needs no compiler and no sudo. `install.sh` does the following:
 1. It checks `/proc/cpuinfo` for SSE4.2, AVX2, FMA, F16C and BMI2, which release builds use, and stops if one is missing. Without the check, walkie would install fine and then crash at the first dictation.
 2. It finds the latest release by following github.com's `releases/latest` redirect, which isn't rate-limited like the GitHub API. It downloads `walkie-<version>-x86_64-linux.tar.gz` and `SHA256SUMS`, and checks the tarball against `SHA256SUMS`. `WALKIE_VERSION=v0.2.0` picks a release instead.
 3. It downloads [parakeet-tdt_ctc-110m-Q8_0.gguf](https://huggingface.co/handy-computer/parakeet-tdt_ctc-110m-gguf) (130 MB) into `~/.local/share/walkie/models/` and checks its SHA-256. A model that's already there and matches isn't downloaded again. The `unified` argument also fetches Hex's 0.6B model: `curl ... | sh -s -- unified`.
-4. Only then does it replace anything: it installs the binary to `~/.local/bin/walkie`, copies `plugin/` to `~/.config/dms/plugins/walkie` and enables it with `dms ipc call plugins enable walkie`. DMS 1.x used `~/.config/DankMaterialShell/plugins/` instead, and the script uses that path when only the old directory exists.
-5. It checks for `libpipewire-0.3.so.0`, `notify-send` and `wl-copy`, which a Fedora desktop usually has. It doesn't install them. If any are missing, it prints the command to run, such as `sudo dnf install libnotify wl-clipboard`.
+4. It checks for `libpipewire-0.3.so.0` and `libstdc++.so.6` and stops if either is missing, naming the library rather than a package, since package names differ between distros. It doesn't install anything. Then it runs the new binary's `--version`, so a binary that needs a newer glibc than the system has fails here, while the old install is still in place.
+5. Only then does it replace anything: it installs the binary to `~/.local/bin/walkie`, copies `plugin/` to `~/.config/dms/plugins/walkie` and enables it with `dms ipc call plugins enable walkie`. DMS 1.x used `~/.config/DankMaterialShell/plugins/` instead, and the script uses that path when only the old directory exists.
+6. It says if `notify-send` or `wl-copy` is missing. walkie works without them, minus notifications and paste mode.
 
 Run it again to upgrade.
 
@@ -63,7 +64,7 @@ cd ~/Documents/code/walkie
 
 In a checkout, `install.sh` without `--from-source` still installs the latest release. `--from-source` replaces the download with a build:
 
-1. `sudo dnf install gcc gcc-c++ cmake make git pkgconf-pkg-config pipewire-devel wl-clipboard libnotify`, plus `cargo rust` if you don't use rustup. Rust 1.85 or newer is required. `SKIP_DNF=1` skips this step.
+1. It checks for `cargo` (Rust 1.85 or newer), `cc`, `c++`, `cmake`, `make`, `git`, `pkg-config` and the libpipewire-0.3 headers (0.3.40 or newer), and stops with a list of what's missing. On Fedora that's `gcc gcc-c++ cmake make git pkgconf-pkg-config pipewire-devel`, on Debian and Ubuntu `build-essential cmake git pkg-config libpipewire-0.3-dev`, on Arch `base-devel cmake git pipewire`.
 2. `cargo build --release --locked`, with `CARGO_BUILD_JOBS=4` so the transcribe.cpp build doesn't run a small laptop out of memory. It installs `target/release/walkie` to `~/.local/bin/walkie`.
 
 The model and plugin steps are the same as above.
@@ -202,7 +203,7 @@ Two environment variables exist for benchmarks:
 
 ## Releasing
 
-`.github/workflows/release.yml` builds releases. It runs `scripts/dist.sh` in a `fedora:43` container, the oldest Fedora walkie supports, so the binary needs no newer glibc or libpipewire than that. ggml is built with `WALKIE_GGML_NATIVE=0`, and the script fails if the binary contains AVX-512 instructions.
+`.github/workflows/release.yml` builds releases. It runs `scripts/dist.sh` in a `fedora:43` container. The v0.1.1 binary needs glibc 2.39 and GLIBCXX 3.4.29. If a toolchain bump raises that, update the glibc floor in README.md, this file and `install.sh`'s error message. ggml is built with `WALKIE_GGML_NATIVE=0`, and the script fails if the binary contains AVX-512 instructions.
 
 1. Bump `version` in `Cargo.toml`, and in `plugin/plugin.json` if the plugin changed. Run `cargo build` so `Cargo.lock` picks up the new version, since the release builds with `--locked`. Commit.
 2. Tag the commit and push the tag:

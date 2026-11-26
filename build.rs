@@ -62,7 +62,7 @@ fn main() {
         .atleast_version("0.3.40")
         .cargo_metadata(false)
         .probe("libpipewire-0.3")
-        .expect("libpipewire-0.3 development files (Fedora: pipewire-devel)");
+        .expect("libpipewire-0.3 development files (pipewire-devel or libpipewire-0.3-dev)");
     let mut pwc = cc::Build::new();
     pwc.file("csrc/pw.c").std("gnu11").warnings(true);
     for inc in &pw.include_paths {
