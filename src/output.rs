@@ -24,11 +24,11 @@ pub fn deliver(cfg: &Config, text: &str) -> Result<()> {
             .ctx(|| "writing WALKIE_TEST_OUT".into());
     }
     match cfg.type_mode {
-        TypeMode::Type => VirtualKeyboard::connect()?.type_text(text),
+        TypeMode::Type => VirtualKeyboard::connect(Duration::from_millis(cfg.key_delay_ms))?.type_text(text),
         TypeMode::Paste => {
             copy(text)?;
             let terminal = focused_app_id().is_some_and(|app| cfg.terminals.contains(&app));
-            VirtualKeyboard::connect()?.paste_shortcut(terminal)
+            VirtualKeyboard::connect(Duration::from_millis(cfg.key_delay_ms))?.paste_shortcut(terminal)
         }
     }
 }

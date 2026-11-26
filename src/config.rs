@@ -65,6 +65,8 @@ pub struct Config {
     pub sound_volume: f32,
     pub notify: bool,
     pub type_mode: TypeMode,
+    /// Pause between typed keys, for clients that drop keys sent in a burst.
+    pub key_delay_ms: u64,
     /// niri `app_id`s that get Ctrl+Shift+V in paste mode.
     pub terminals: Vec<String>,
     /// Appended after each transcript.
@@ -88,6 +90,7 @@ impl Config {
             sound_volume: 0.4,
             notify: true,
             type_mode: TypeMode::Type,
+            key_delay_ms: 0,
             terminals: "foot|kitty|Alacritty|alacritty|ghostty|wezterm|herdr|konsole|gnome-terminal"
                 .split('|')
                 .map(str::to_owned)
@@ -167,6 +170,7 @@ impl Config {
                     _ => return Err(format!("expected type or paste, got {v:?}")),
                 }
             }
+            "KEY_DELAY_MS" => self.key_delay_ms = parse_num(v)?,
             "TERMINALS" => self.terminals = v.split('|').filter(|s| !s.is_empty()).map(str::to_owned).collect(),
             "TRAILING" => v.clone_into(&mut self.trailing),
             "DIGITS" => self.digits = parse_bool(v)?,
@@ -322,6 +326,7 @@ mod tests {
 MODEL=$DATA/models/parakeet-unified-en-0.6b-Q8_0.gguf
 export THREADS=2   # fewer threads
 LOCK_MS=0
+KEY_DELAY_MS=5
 TYPE_MODE=paste
 TRAILING=" "
 TERMINALS='foot|kitty'
@@ -333,6 +338,7 @@ POSTPROC="$DATA/py/bin/python $DATA/bin/dictate-numbers"
         assert_eq!(cfg.model, PathBuf::from("/d/models/parakeet-unified-en-0.6b-Q8_0.gguf"));
         assert_eq!(cfg.threads, 2);
         assert_eq!(cfg.lock_ms, 0);
+        assert_eq!(cfg.key_delay_ms, 5);
         assert_eq!(cfg.type_mode, TypeMode::Paste);
         assert_eq!(cfg.trailing, " ");
         assert_eq!(cfg.terminals, ["foot", "kitty"]);

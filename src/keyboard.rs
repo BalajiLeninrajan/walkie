@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::{AsFd, FromRawFd};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::{wl_registry::WlRegistry, wl_seat::WlSeat};
@@ -97,6 +97,7 @@ pub struct VirtualKeyboard {
     queue: EventQueue<State>,
     kb: ZwpVirtualKeyboardV1,
     epoch: Instant,
+    key_delay: Duration,
 }
 
 fn wl_err(e: impl std::fmt::Display) -> Error {
@@ -104,7 +105,8 @@ fn wl_err(e: impl std::fmt::Display) -> Error {
 }
 
 impl VirtualKeyboard {
-    pub fn connect() -> Result<Self> {
+    /// Connects to the compositor. `key_delay` is slept between typed keys.
+    pub fn connect(key_delay: Duration) -> Result<Self> {
         let conn = Connection::connect_to_env().map_err(wl_err)?;
         let (globals, queue) = registry_queue_init::<State>(&conn).map_err(wl_err)?;
         let qh = queue.handle();
@@ -113,7 +115,7 @@ impl VirtualKeyboard {
             .bind(&qh, 1..=1, ())
             .map_err(|e| wl_err(format!("the compositor has no virtual keyboard support: {e}")))?;
         let kb = manager.create_virtual_keyboard(&seat, &qh, ());
-        Ok(Self { queue, kb, epoch: Instant::now() })
+        Ok(Self { queue, kb, epoch: Instant::now(), key_delay })
     }
 
     fn upload(&mut self, keymap: &Keymap) -> Result<()> {
@@ -155,8 +157,11 @@ impl VirtualKeyboard {
         }
         let keymap = Keymap::new(syms.iter().copied());
         self.upload(&keymap)?;
-        for sym in syms {
-            self.tap(keymap.codes[&sym])?;
+        for (i, sym) in syms.iter().enumerate() {
+            if i > 0 && !self.key_delay.is_zero() {
+                std::thread::sleep(self.key_delay);
+            }
+            self.tap(keymap.codes[sym])?;
         }
         Ok(())
     }
