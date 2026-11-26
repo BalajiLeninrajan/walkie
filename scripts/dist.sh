@@ -24,7 +24,11 @@ epoch=${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}
 WALKIE_GGML_NATIVE=0 CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-4} cargo build --release --locked
 bin=target/release/walkie
 # A zmm register means AVX-512 code, which would crash on CPUs without it.
-if objdump -d --no-show-raw-insn "$bin" | grep -q '%zmm'; then
+# The disassembly goes to a file so a failing objdump stops the script
+# instead of handing grep nothing to find.
+command -v objdump >/dev/null || { echo "needs objdump (binutils)" >&2; exit 1; }
+objdump -d --no-show-raw-insn "$bin" >target/walkie.dis
+if grep -q '%zmm' target/walkie.dis; then
     echo "$bin uses AVX-512 instructions; it must run on AVX2-only CPUs" >&2
     exit 1
 fi
