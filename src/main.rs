@@ -8,7 +8,9 @@ mod engine;
 mod error;
 mod history;
 mod indicator;
+mod keyboard;
 mod machine;
+mod output;
 mod sound;
 mod text;
 
