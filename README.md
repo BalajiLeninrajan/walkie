@@ -32,10 +32,10 @@ curl -fsSL https://raw.githubusercontent.com/BalajiLeninrajan/walkie/main/instal
 
 This needs no compiler and no sudo. `install.sh` does the following:
 
-1. It asks the GitHub API for the latest release, downloads `walkie-<version>-x86_64-linux.tar.gz` and `SHA256SUMS`, and checks the tarball against `SHA256SUMS`. `WALKIE_VERSION=v0.2.0` picks a release instead.
-2. It installs the binary to `~/.local/bin/walkie`.
+1. It checks `/proc/cpuinfo` for SSE4.2, AVX2, FMA, F16C and BMI2, which release builds use, and stops if one is missing. Without the check, walkie would install fine and then crash at the first dictation.
+2. It finds the latest release by following github.com's `releases/latest` redirect, which isn't rate-limited like the GitHub API. It downloads `walkie-<version>-x86_64-linux.tar.gz` and `SHA256SUMS`, and checks the tarball against `SHA256SUMS`. `WALKIE_VERSION=v0.2.0` picks a release instead.
 3. It downloads [parakeet-tdt_ctc-110m-Q8_0.gguf](https://huggingface.co/handy-computer/parakeet-tdt_ctc-110m-gguf) (130 MB) into `~/.local/share/walkie/models/` and checks its SHA-256. A model that's already there and matches isn't downloaded again. The `unified` argument also fetches Hex's 0.6B model: `curl ... | sh -s -- unified`.
-4. It copies `plugin/` to `~/.config/dms/plugins/walkie` and enables it with `dms ipc call plugins enable walkie`. DMS 1.x used `~/.config/DankMaterialShell/plugins/` instead, and the script uses that path when only the old directory exists.
+4. Only then does it replace anything: it installs the binary to `~/.local/bin/walkie`, copies `plugin/` to `~/.config/dms/plugins/walkie` and enables it with `dms ipc call plugins enable walkie`. DMS 1.x used `~/.config/DankMaterialShell/plugins/` instead, and the script uses that path when only the old directory exists.
 5. It checks for `libpipewire-0.3.so.0`, `notify-send` and `wl-copy`, which a Fedora desktop usually has. It doesn't install them. If any are missing, it prints the command to run, such as `sudo dnf install libnotify wl-clipboard`.
 
 Run it again to upgrade.
