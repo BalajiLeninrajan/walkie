@@ -21,18 +21,26 @@
 //! runs; a reader can treat a non-idle state older than ~2 s as stale (the
 //! session died). The file is left in place, as `idle`, between dictations.
 //!
+//! The same records also go, one per line, to a listener on
+//! `$XDG_RUNTIME_DIR/walkie-indicator.sock` if one exists (the DMS plugin
+//! binds it). Pushing lines is far cheaper for the shell than re-reading the
+//! file on every inotify event. walkie connects at the start of a session and
+//! retries at most once a second; a missing or stuck listener never blocks it.
+//!
 //! Sessions can overlap: a new press while the last one is still
 //! transcribing starts a second session. The file then belongs to the newer
 //! one; the older one stops writing as soon as it sees a live socket that
 //! isn't its own.
 
 use std::fs::{File, OpenOptions};
+use std::io::{ErrorKind, Write};
 use std::os::unix::fs::FileExt;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::error::{IoContext, Result};
 
@@ -128,7 +136,46 @@ pub struct Indicator {
     file: Arc<File>,
     status: Arc<Status>,
     socket: PathBuf,
+    stream_path: PathBuf,
     thread: Option<JoinHandle<()>>,
+}
+
+/// The optional live stream to `$XDG_RUNTIME_DIR/walkie-indicator.sock`.
+struct Stream {
+    path: PathBuf,
+    conn: Option<UnixStream>,
+    next_try: Instant,
+}
+
+impl Stream {
+    fn new(path: PathBuf) -> Self {
+        Self { path, conn: None, next_try: Instant::now() }
+    }
+
+    fn send(&mut self, rec: &[u8]) {
+        if self.conn.is_none() && Instant::now() >= self.next_try {
+            self.conn = UnixStream::connect(&self.path).ok().filter(|c| c.set_nonblocking(true).is_ok());
+            if self.conn.is_none() {
+                self.next_try = Instant::now() + Duration::from_secs(1);
+            }
+        }
+        let Some(conn) = &mut self.conn else { return };
+        match conn.write(rec) {
+            Ok(n) if n == rec.len() => {}
+            // A listener that stopped reading: drop this record.
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+            _ => {
+                self.conn = None;
+                self.next_try = Instant::now() + Duration::from_secs(1);
+            }
+        }
+    }
+}
+
+/// Path of the live stream socket for a runtime dir like `/run/user/1000`.
+fn stream_path(run_dir: &Path) -> PathBuf {
+    let base = run_dir.parent().unwrap_or(run_dir);
+    base.join("walkie-indicator.sock")
 }
 
 /// True once a newer session owns the state file: this one has released its
@@ -156,14 +203,16 @@ impl Indicator {
         file.set_len(RECORD_LEN as u64).ctx(|| format!("resizing {}", path.display()))?;
         let file = Arc::new(file);
         let socket = crate::ipc::socket_path(run_dir);
+        let stream_path = stream_path(run_dir);
         let thread = {
             let (file, status, socket) = (Arc::clone(&file), Arc::clone(&status), socket.clone());
+            let stream = Stream::new(stream_path.clone());
             std::thread::Builder::new()
                 .name("indicator".into())
-                .spawn(move || writer(&file, &status, &socket))
+                .spawn(move || writer(&file, &status, &socket, stream))
                 .ctx(|| "starting the indicator thread".into())?
         };
-        Ok(Self { file, status, socket, thread: Some(thread) })
+        Ok(Self { file, status, socket, stream_path, thread: Some(thread) })
     }
 
     pub fn status(&self) -> &Arc<Status> {
@@ -179,12 +228,14 @@ impl Drop for Indicator {
             let _ = t.join();
         }
         if !superseded(&self.status, &self.socket) {
-            let _ = self.file.write_at(&format_record(Phase::Idle, 0.0, false), 0);
+            let idle = format_record(Phase::Idle, 0.0, false);
+            let _ = self.file.write_at(&idle, 0);
+            Stream::new(self.stream_path.clone()).send(&idle);
         }
     }
 }
 
-fn writer(file: &File, status: &Status, socket: &Path) {
+fn writer(file: &File, status: &Status, socket: &Path, mut stream: Stream) {
     let mut since_write = Duration::MAX;
     let tick = Duration::from_millis(40);
     let mut last = [0u8; RECORD_LEN];
@@ -196,6 +247,7 @@ fn writer(file: &File, status: &Status, socket: &Path) {
         let due = rec != last || since_write >= Duration::from_millis(250);
         if due && !superseded(status, socket) {
             let _ = file.write_at(&rec, 0);
+            stream.send(&rec);
             last = rec;
             since_write = Duration::ZERO;
         }
@@ -242,6 +294,29 @@ mod tests {
         assert!(meter(0.001).abs() < 1e-3); // -60 dBFS
         assert!((meter(1.0) - 1.0).abs() < 1e-6);
         assert!((meter(0.031_622_8) - 0.5).abs() < 1e-3); // -30 dBFS
+    }
+
+    #[test]
+    fn stream_path_sits_next_to_the_run_dir() {
+        assert_eq!(stream_path(Path::new("/run/user/1000/walkie")), Path::new("/run/user/1000/walkie-indicator.sock"));
+    }
+
+    #[test]
+    fn stream_delivers_records_and_survives_a_missing_listener() {
+        use std::io::{BufRead, BufReader};
+        let dir = std::env::temp_dir().join(format!("walkie-stream-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.sock");
+        let mut s = Stream::new(path.clone());
+        s.send(&format_record(Phase::Idle, 0.0, false)); // nobody listening: no panic, no block
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        s.next_try = Instant::now();
+        s.send(&format_record(Phase::Recording, 0.5, false));
+        let (conn, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        BufReader::new(conn).read_line(&mut line).unwrap();
+        assert_eq!(line.trim_end(), "v=1 state=recording level=0.50 locked=0");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
