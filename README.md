@@ -4,7 +4,7 @@ over.
 
 Push-to-talk dictation for Wayland. Hold a key, talk, let go, and the text is typed into the focused window. Nothing stays in memory between dictations: each press starts a short-lived process that records, transcribes and types, then exits.
 
-- **Engine.** [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) (the engine Hex uses) with Parakeet TDT-CTC 110M, on the CPU. The model loads while you talk, so only the transcription is left after you let go: about 0.7 s for a 10 to 15 s dictation on a 4-thread laptop CPU.
+- **Engine.** [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp) (the engine Hex uses) with Parakeet TDT-CTC 110M, on the CPU. The model loads while you talk, so only the transcription is left after you let go. That's 0.7 to 1 s for a 10 to 15 s dictation, on 4 threads of a Ryzen 7 5700U capped at 1.8 GHz.
 - **Memory.** About 270 MB during a dictation (half of it the memory-mapped model file), and none between dictations.
 - **Native.** One binary. It records through PipeWire, types through the Wayland virtual-keyboard protocol (any Unicode character), plays its beeps through PipeWire, and converts spoken numbers to digits with [text2num](https://crates.io/crates/text2num). The only helpers it spawns are `notify-send` and, in paste mode, `wl-copy`.
 - **Indicator.** An optional [DankMaterialShell](https://github.com/AvengeMedia/DankMaterialShell) plugin shows a pill at the bottom of the screen with a live mic level while you talk.
@@ -18,6 +18,9 @@ Push-to-talk dictation for Wayland. Hold a key, talk, let go, and the text is ty
 3. It transcribes, cleans up the text (optional digits and `POSTPROC` filter), appends it to the history, types it, and exits.
 
 A tap shorter than `LOCK_MS` locks the recording instead, for hands-free dictation. The next press-and-release ends it. Text is only ever typed on a key release, so the push-to-talk key is never held while keystrokes arrive.
+
+- **Overlapping dictations.** If you press again while the last dictation is still transcribing, a second session starts. The first one waits for the new key to come up before it types, so the texts arrive in order.
+- **Release timing.** `start` and `stop` stamp the key event with the time kanata ran them. They take a lock while they look for a session, so a very quick tap is measured correctly even if the release reaches the session first.
 
 ## Install
 
@@ -63,7 +66,7 @@ Other commands:
 
 `~/.config/walkie/config` uses `KEY=value` lines in shell syntax. A config from the bash `dictate` script works unchanged. The file is parsed, never executed:
 
-- Supported: comments, `export`, single and double quotes, and `$VAR` / `${VAR}`.
+- Supported: comments, `export`, single and double quotes, and `$VAR`, `${VAR}` and `${VAR:-default}`.
 - `$DATA` is `~/.local/share/walkie`, and later keys can use earlier ones.
 - Command substitution is rejected.
 
@@ -73,9 +76,9 @@ Other commands:
 | `THREADS` | `4` | Inference threads |
 | `LOCK_MS` | `300` | A tap shorter than this locks the recording. `0` disables locking |
 | `TAIL_MS` | `150` | Keep recording this long after release |
-| `MAX_SECONDS` | `300` | Finish on our own if the release never arrives |
+| `MAX_SECONDS` | `300` | Finish on our own if the release never arrives. A session still running 120 s after that is ended |
 | `DIGITS` | `0` | `1` writes numbers as digits: "twenty five" becomes "25". Isolated "one" and "two" stay words |
-| `POSTPROC` | empty | Filter command run with `sh -c`, transcript on stdin |
+| `POSTPROC` | empty | Filter command run with `sh -c`, transcript on stdin. Killed after 10 s, and the text passes through unchanged |
 | `TYPE_MODE` | `type` | `paste` copies with `wl-copy` and presses Ctrl+V, or Ctrl+Shift+V in terminals |
 | `TERMINALS` | `foot\|kitty\|Alacritty\|alacritty\|ghostty\|wezterm\|herdr\|konsole\|gnome-terminal` | niri `app_id`s that get Ctrl+Shift+V. Exact names separated by `\|` |
 | `KEY_DELAY_MS` | `0` | Pause between typed keys, if an app drops keys |
@@ -99,11 +102,17 @@ Files:
 - a lock while a tap has locked the recording
 - a "transcribing" state after release
 
-It never takes keyboard focus and the pill is click-through. It uses the DMS theme colors and reads the state file through a `FileView`, so it costs DMS almost nothing when idle. See [plugin/README.md](plugin/README.md) for its settings.
+It never takes keyboard focus and the pill is click-through. It uses the DMS theme colors. walkie pushes each state record to the plugin over a socket. Measured on a Ryzen 7 5700U at 1.8 GHz, the plugin adds:
+
+- nothing measurable to DMS's CPU while idle
+- about 6% of a core while the pill is showing the live meter, and 2 to 3% while transcribing
+- about 8 MB of memory while it shows
+
+See [plugin/README.md](plugin/README.md) for its settings.
 
 ## State file
 
-`$XDG_RUNTIME_DIR/walkie/state` is the contract between `walkie` and the plugin, and anything else may read it too. It holds one line of space-separated `key=value` fields, padded with spaces to exactly 63 bytes plus a newline:
+`$XDG_RUNTIME_DIR/walkie/state` is the contract between `walkie` and anything that wants to show its state. It holds one line of space-separated `key=value` fields, padded with spaces to exactly 63 bytes plus a newline:
 
 ```
 v=1 state=recording level=0.42 locked=0
@@ -122,6 +131,8 @@ Rules:
 - Each update rewrites the whole record in place at offset 0 with one `pwrite`. The file never shrinks and its inode never changes, so inotify watches stay valid and a reader never sees an empty file.
 - Updates arrive every 40 ms while recording, and at least every 250 ms while a session is running. A non-idle state that hasn't been rewritten for 2 s means the session died, and readers should treat it as idle.
 - The file stays in place, saying `idle`, between dictations. It doesn't exist before the first dictation after boot.
+- If something listens on `$XDG_RUNTIME_DIR/walkie-indicator.sock`, walkie connects at the start of each dictation and sends every record there too, one per line. This is how the DMS plugin gets its updates. A listener that can't keep up loses records, never walkie's time. Re-reading the file on every inotify event cost DMS about 7% of a core at 25 updates a second; the socket costs about 3%.
+- When dictations overlap, the newest session owns the file and the stream. Older sessions stop writing once a newer one exists.
 
 ## Development
 
