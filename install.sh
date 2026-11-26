@@ -31,11 +31,16 @@ install -Dm755 target/release/walkie "$HOME/.local/bin/walkie"
 get() { # get REPO FILE SHA256
     local out=$DATA/models/$2
     mkdir -p "$DATA/models"
-    if [ ! -s "$out" ]; then
-        curl -fL --retry 3 -o "$out.part" "$HF/$1-gguf/resolve/main/$2"
-        mv "$out.part" "$out"
+    if [ -s "$out" ] && { [ -z "$3" ] || echo "$3  $out" | sha256sum -c --quiet 2>/dev/null; }; then
+        return 0
     fi
-    if [ -n "$3" ]; then echo "$3  $out" | sha256sum -c --quiet; fi
+    curl -fL --retry 3 -o "$out.part" "$HF/$1-gguf/resolve/main/$2"
+    if [ -n "$3" ] && ! echo "$3  $out.part" | sha256sum -c --quiet; then
+        rm -f "$out.part"
+        echo "checksum mismatch for $2" >&2
+        return 1
+    fi
+    mv "$out.part" "$out"
 }
 get parakeet-tdt_ctc-110m parakeet-tdt_ctc-110m-Q8_0.gguf 7dd44c74a331d788a4e5f8b16913b3feb29ced22cf5613aad0e0f6cd30516296
 case " $* " in *" unified "*) get parakeet-unified-en-0.6b parakeet-unified-en-0.6b-Q8_0.gguf "" ;; esac
@@ -46,6 +51,7 @@ if [ -d "$CONF/dms" ] || [ ! -d "$CONF/DankMaterialShell" ]; then
 else
     plugins=$CONF/DankMaterialShell/plugins
 fi
+[ -f plugin/plugin.json ] || { echo "plugin/ is missing; run from a full checkout" >&2; exit 1; }
 mkdir -p "$plugins"
 rm -rf "$plugins/walkie"
 cp -r plugin "$plugins/walkie"
@@ -55,5 +61,5 @@ if command -v dms >/dev/null; then
         echo "DMS plugin enabled" || echo "Enable Walkie under DMS Settings → Plugins"
 fi
 
-walkie --version
+"$HOME/.local/bin/walkie" --version
 echo "Point kanata at: $HOME/.local/bin/walkie start (press) / $HOME/.local/bin/walkie stop (release)"
