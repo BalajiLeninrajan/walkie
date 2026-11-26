@@ -160,7 +160,19 @@ main() {
     cp -r "$src/plugin" "$plugins/walkie"
     if command -v dms >/dev/null; then
         dms ipc call plugin-scan scan </dev/null >/dev/null 2>&1 || true
-        if dms ipc call plugins enable walkie </dev/null >/dev/null 2>&1; then
+        # dms ipc exits 0 even when the call fails, and the scan above is
+        # debounced, so an enable sent right after it answers
+        # PLUGIN_NOT_FOUND. Read the reply and retry for up to 5 s.
+        enabled=
+        tries=0
+        while [ "$tries" -lt 10 ]; do
+            case $(dms ipc call plugins enable walkie </dev/null 2>/dev/null) in
+                PLUGIN_ENABLE_SUCCESS*) enabled=1; break ;;
+            esac
+            tries=$((tries + 1))
+            sleep 0.5
+        done
+        if [ -n "$enabled" ]; then
             echo "DMS plugin enabled"
         else
             echo "Enable Walkie under DMS Settings → Plugins"
