@@ -8,13 +8,21 @@ It runs on your CPU, needs no internet once installed, and uses no memory when y
 
 ## Install
 
-You need Fedora 43 or 44 and an Intel CPU from 2013 or later (Haswell) or an AMD one from 2015 or later (Excavator). The installer checks and stops if yours is too old.
+You need:
+
+- 64-bit Linux with glibc 2.39 or newer. Fedora 40, Ubuntu 24.04, Debian 13, Arch and anything newer all work.
+- An Intel CPU from 2013 or later (Haswell) or an AMD one from 2015 or later (Excavator).
+- A Wayland compositor with the virtual keyboard protocol. niri, Sway and Hyprland have it. GNOME doesn't.
+- PipeWire.
+- Optionally, `notify-send` for notifications and `wl-copy` for `TYPE_MODE=paste`. They usually come in packages called `libnotify` and `wl-clipboard`.
+
+walkie doesn't install any of these for you. Then run:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/BalajiLeninrajan/walkie/main/install.sh | sh
 ```
 
-No sudo needed. It downloads walkie and its 130 MB speech model, and tells you if anything else is missing. Run the same command again to upgrade.
+No sudo needed. It downloads walkie and its 130 MB speech model. It stops before installing anything if your CPU, glibc or PipeWire won't work. Run the same command again to upgrade.
 
 ## Set up a key
 

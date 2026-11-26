@@ -1,12 +1,11 @@
 #!/bin/sh
-# Install walkie, its model and the DMS plugin. Written for Fedora on x86_64.
+# Install walkie, its model and the DMS plugin on x86_64 Linux.
 #
 #   curl -fsSL https://raw.githubusercontent.com/BalajiLeninrajan/walkie/main/install.sh | sh
 #   ./install.sh                             # the latest release
 #   WALKIE_VERSION=v0.2.0 ./install.sh       # a given release
 #   ./install.sh unified                     # also fetch Hex's larger model (731 MB)
-#   ./install.sh --from-source               # build this checkout (installs build deps with sudo dnf)
-#   SKIP_DNF=1 ./install.sh --from-source    # build deps already installed
+#   ./install.sh --from-source               # build this checkout
 #
 # Through curl, pass arguments after `sh -s --`. Run from an unpacked release
 # tarball, it installs that tarball's files instead of downloading.
@@ -92,13 +91,15 @@ main() {
         [ "$checkout" = 1 ] ||
             die "--from-source builds a checkout: git clone --recurse-submodules https://github.com/$REPO"
         cd "$here"
-        # cargo from dnf only if there's no rustup toolchain
-        if [ "${SKIP_DNF:-0}" != 1 ]; then
-            pkgs="gcc gcc-c++ cmake make git pkgconf-pkg-config pipewire-devel wl-clipboard libnotify"
-            command -v cargo >/dev/null || pkgs="$pkgs cargo rust"
-            # shellcheck disable=SC2086 # one word per package
-            sudo dnf install -y $pkgs
+        # Checked, never installed: package names differ between distros.
+        missing=
+        for c in cargo cc c++ cmake make git pkg-config; do
+            command -v "$c" >/dev/null || missing="$missing $c"
+        done
+        if command -v pkg-config >/dev/null && ! pkg-config --exists 'libpipewire-0.3 >= 0.3.40'; then
+            missing="$missing libpipewire-0.3-headers"
         fi
+        [ -z "$missing" ] || die "building needs:$missing. Install them with your package manager (Rust 1.85 or newer)."
         # CARGO_BUILD_JOBS also caps the transcribe.cpp cmake build.
         git submodule update --init
         CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-4} cargo build --release --locked
@@ -146,7 +147,24 @@ main() {
     get parakeet-tdt_ctc-110m parakeet-tdt_ctc-110m-Q8_0.gguf 7dd44c74a331d788a4e5f8b16913b3feb29ced22cf5613aad0e0f6cd30516296
     [ "$unified" = 1 ] && get parakeet-unified-en-0.6b parakeet-unified-en-0.6b-Q8_0.gguf ""
 
-    # 3. the binary and the DMS plugin, together.
+    # 3. runtime dependencies. Checked, never installed: package names differ between distros.
+    has_lib() {
+        ldconfig -p 2>/dev/null | grep -qF "$1" && return 0
+        for d in /usr/lib64 /lib64 /usr/lib /lib /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu; do
+            [ -e "$d/$1" ] && return 0
+        done
+        return 1
+    }
+    missing=
+    has_lib libpipewire-0.3.so.0 || missing="$missing libpipewire-0.3"
+    has_lib libstdc++.so.6 || missing="$missing libstdc++"
+    [ -z "$missing" ] || die "walkie needs these libraries:$missing. Install them with your package manager."
+    # A binary built against a newer glibc than this system's fails here, before
+    # it replaces a working install.
+    "$bin_src" --version >/dev/null 2>"$tmp/err" ||
+        die "walkie doesn't run on this system: $(cat "$tmp/err"). Releases need glibc 2.39 or newer; build a checkout with --from-source."
+
+    # 4. the binary and the DMS plugin, together.
     # DMS 2.x reads ~/.config/dms, 1.x read ~/.config/DankMaterialShell
     if [ -d "$CONF/dms" ] || [ ! -d "$CONF/DankMaterialShell" ]; then
         plugins=$CONF/dms/plugins
@@ -179,19 +197,11 @@ main() {
         fi
     fi
 
-    # 4. runtime dependencies. Checked, never installed: that would need sudo.
-    has_lib() {
-        ldconfig -p 2>/dev/null | grep -qF "$1" || [ -e "/usr/lib64/$1" ] || [ -e "/lib64/$1" ]
-    }
-    missing=
-    has_lib libpipewire-0.3.so.0 || missing="$missing pipewire-libs"
-    has_lib libstdc++.so.6 || missing="$missing libstdc++"
-    command -v notify-send >/dev/null || missing="$missing libnotify"
-    command -v wl-copy >/dev/null || missing="$missing wl-clipboard"
-    if [ -n "$missing" ]; then
-        echo "walkie is installed, but it needs these packages. Install them with:"
-        echo "  sudo dnf install$missing"
-        case $missing in *pipewire-libs* | *libstdc++*) exit 1 ;; esac
+    optional=
+    command -v notify-send >/dev/null || optional="$optional notify-send"
+    command -v wl-copy >/dev/null || optional="$optional wl-copy"
+    if [ -n "$optional" ]; then
+        echo "Optional, not found:$optional. notify-send shows notifications and wl-copy is used for TYPE_MODE=paste."
     fi
 
     "$BIN/walkie" --version

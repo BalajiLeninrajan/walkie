@@ -5,8 +5,8 @@
 #
 # VERSION defaults to Cargo.toml's and must match it when given. Writes
 # dist/walkie-VERSION-x86_64-linux.tar.gz and dist/SHA256SUMS. The release
-# workflow runs this in a fedora:43 container, the oldest Fedora walkie
-# supports, so the binary needs no newer glibc or libpipewire than that.
+# workflow runs this in a fedora:43 container. The binary needs glibc 2.39, so
+# it also runs on Ubuntu 24.04, Debian 13 and Arch.
 set -eu
 cd "$(dirname "$0")/.."
 
