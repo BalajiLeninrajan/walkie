@@ -57,9 +57,15 @@ trap 'exit 1' HUP INT TERM
 fetch_release() {
     tag=${WALKIE_VERSION:-}
     if [ -z "$tag" ]; then
-        tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
-            sed -n 's/^ *"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
-        [ -n "$tag" ] || die "couldn't find the latest release of $REPO"
+        # github.com redirects this to .../releases/tag/vX.Y.Z. The API would
+        # say the same, but it allows 60 requests an hour per IP.
+        url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest") ||
+            die "couldn't find the latest release of $REPO; set WALKIE_VERSION=vX.Y.Z to pick one"
+        tag=${url##*/}
+        case $tag in
+            v*) ;;
+            *) die "couldn't find the latest release of $REPO; set WALKIE_VERSION=vX.Y.Z to pick one" ;;
+        esac
     fi
     case $tag in v*) ;; *) tag=v$tag ;; esac
     name=walkie-${tag#v}-x86_64-linux
