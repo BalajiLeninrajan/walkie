@@ -80,7 +80,7 @@ impl Drop for PipeWire {
 pub struct Sink {
     samples: Mutex<Vec<i16>>,
     status: Arc<Status>,
-    /// Unix ms when the first samples arrived, 0 before that.
+    /// Monotonic ms when the first samples arrived, 0 before that.
     first_ms: AtomicU64,
 }
 
@@ -93,7 +93,7 @@ impl Sink {
         if chunk.is_empty() {
             return;
         }
-        let _ = self.first_ms.compare_exchange(0, crate::now_ms(), Ordering::Relaxed, Ordering::Relaxed);
+        let _ = self.first_ms.compare_exchange(0, crate::ipc::mono_ms(), Ordering::Relaxed, Ordering::Relaxed);
         self.status.report_rms(ac_rms(chunk));
         self.samples.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend_from_slice(chunk);
     }
@@ -175,7 +175,15 @@ impl Recorder {
         Ok(Self { sink, source: Source::File { stop, thread: Some(thread) } })
     }
 
-    /// Unix ms when the first audio arrived, if any has.
+    /// What went wrong with the microphone stream, if PipeWire said.
+    pub fn error(&self) -> Option<String> {
+        match &self.source {
+            Source::PipeWire(pw) => pw.last_error(),
+            Source::File { .. } => None,
+        }
+    }
+
+    /// Monotonic ms when the first audio arrived, if any has.
     pub fn first_audio_ms(&self) -> Option<u64> {
         Some(self.sink.first_ms.load(Ordering::Relaxed)).filter(|&t| t != 0)
     }

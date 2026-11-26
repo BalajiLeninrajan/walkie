@@ -23,24 +23,41 @@ use crate::ipc::{self, Msg};
 use crate::machine::{Action, KeyMachine};
 use crate::notify::Notifier;
 use crate::sound::Beep;
-use crate::{history, now_ms, output, text};
+use crate::{history, output, text};
 
 /// Under 0.1 s of audio there is nothing to transcribe.
 const MIN_SAMPLES: usize = 1600;
 
-/// Handles `walkie start`.
-pub fn start(cfg: &Config, dirs: &Dirs, warnings: &[String]) -> Result<()> {
+/// Extra time past `MAX_SECONDS` before the watchdog gives up on a session
+/// stuck transcribing or typing.
+const WATCHDOG_GRACE: Duration = Duration::from_secs(120);
+
+/// How long a `POSTPROC` filter may run.
+const POSTPROC_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// What the session knows when it starts.
+struct Started<'a> {
+    cfg: &'a Config,
+    dirs: &'a Dirs,
+    /// Monotonic ms when kanata ran `walkie start`.
+    pressed_ms: u64,
+    /// A `walkie stop` that arrived before the socket existed.
+    pending_release: Option<u64>,
+}
+
+/// Handles `walkie start`. `pressed_ms` is the monotonic clock at entry.
+pub fn start(cfg: &Config, dirs: &Dirs, warnings: &[String], pressed_ms: u64) -> Result<()> {
     fs::create_dir_all(&dirs.run).ctx(|| format!("creating {}", dirs.run.display()))?;
     fs::set_permissions(&dirs.run, fs::Permissions::from_mode(0o700))
         .ctx(|| format!("securing {}", dirs.run.display()))?;
 
-    // Two quick presses must not start two sessions.
-    let lock = StartLock::acquire(&dirs.run)?;
-    if ipc::send(&dirs.run, Msg::Press)? {
+    // Serializes with other starts and with stops (see ipc).
+    let lock = ipc::Lock::acquire(&dirs.run)?;
+    if ipc::send(&dirs.run, Msg::Press(pressed_ms))? {
         return Ok(()); // key repeat, or the press that ends a locked recording
     }
     let listener = ipc::bind(&dirs.run)?;
-    let pressed_ms = now_ms();
+    let pending_release = ipc::take_pending_release(&dirs.run, pressed_ms);
 
     // SAFETY: walkie is single-threaded until here, so the child gets a
     // consistent copy of the process.
@@ -49,27 +66,14 @@ pub fn start(cfg: &Config, dirs: &Dirs, warnings: &[String]) -> Result<()> {
         0 => {
             drop(lock); // the parent releases it when it exits
             detach(dirs);
-            let code = i32::from(run(cfg, dirs, &listener, pressed_ms, warnings).is_err());
-            std::process::exit(code);
+            let started = Started { cfg, dirs, pressed_ms, pending_release };
+            let code = i32::from(run(&started, &listener, warnings).is_err());
+            // _exit, not exit: skip C++ static destructors, which could run
+            // under a model loader thread that a cancel left behind.
+            // SAFETY: ends the process; nothing after this runs.
+            unsafe { libc::_exit(code) }
         }
         _ => Ok(()),
-    }
-}
-
-/// `flock` on `run/lock`, held while checking for and creating a session.
-struct StartLock {
-    _file: File,
-}
-
-impl StartLock {
-    fn acquire(run: &std::path::Path) -> Result<Self> {
-        let path = run.join("lock");
-        let f = File::create(&path).ctx(|| format!("opening {}", path.display()))?;
-        // SAFETY: valid fd.
-        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(std::io::Error::last_os_error()).ctx(|| format!("locking {}", path.display()));
-        }
-        Ok(Self { _file: f })
     }
 }
 
@@ -110,10 +114,12 @@ impl Feedback {
     }
 }
 
-fn run(cfg: &Config, dirs: &Dirs, listener: &UnixListener, pressed_ms: u64, warnings: &[String]) -> Result<()> {
+fn run(st: &Started, listener: &UnixListener, warnings: &[String]) -> Result<()> {
+    let (cfg, dirs) = (st.cfg, st.dirs);
     for w in warnings {
         eprintln!("walkie: config {w}");
     }
+    start_watchdog(&dirs.run, Duration::from_secs(cfg.max_seconds) + WATCHDOG_GRACE);
     let status = Arc::new(Status::default());
     status.set_phase(Phase::Recording);
     let test_wav = std::env::var_os("WALKIE_TEST_WAV");
@@ -131,10 +137,13 @@ fn run(cfg: &Config, dirs: &Dirs, listener: &UnixListener, pressed_ms: u64, warn
             (None, None) => unreachable!("PipeWire is always opened without a test file"),
         };
         let indicator = Indicator::start(&dirs.run, Arc::clone(&status))?;
-        record(cfg, dirs, listener, pressed_ms, recorder, &indicator, &feedback)
+        record(st, listener, recorder, &indicator, &feedback)
     })();
-    // Don't leave a dead socket for the next `start` to trip over.
-    let _ = fs::remove_file(ipc::socket_path(&dirs.run));
+    // Don't leave a dead socket for the next `start` to trip over. After the
+    // release the path may already belong to a newer session.
+    if !status.released() {
+        let _ = fs::remove_file(ipc::socket_path(&dirs.run));
+    }
     if let Err(e) = &result {
         feedback.fail(e);
     }
@@ -142,15 +151,40 @@ fn run(cfg: &Config, dirs: &Dirs, listener: &UnixListener, pressed_ms: u64, warn
     result
 }
 
+/// Exits the session if it is still running at `after`, leaving the
+/// indicator idle. Covers a hung typing step or model.
+fn start_watchdog(run_dir: &std::path::Path, after: Duration) {
+    let run_dir = run_dir.to_path_buf();
+    thread::spawn(move || {
+        thread::sleep(after);
+        eprintln!("walkie: session still running after {} s, giving up", after.as_secs());
+        crate::indicator::force_idle(&run_dir);
+        // SAFETY: ends the process.
+        unsafe { libc::_exit(3) }
+    });
+}
+
+/// Waits while a newer session is recording: its key may be held down, and
+/// typing then would turn our text into shortcuts. Its release (or lock)
+/// removes or keeps its socket; we go once it's gone or the deadline hits.
+fn wait_for_newer_session(run_dir: &std::path::Path, deadline: Instant) {
+    let t = Instant::now();
+    while ipc::session_alive(run_dir) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(30));
+    }
+    if t.elapsed() > Duration::from_millis(30) {
+        eprintln!("walkie: waited {} ms for a newer session's key release", t.elapsed().as_millis());
+    }
+}
+
 fn record(
-    cfg: &Config,
-    dirs: &Dirs,
+    st: &Started,
     listener: &UnixListener,
-    pressed_ms: u64,
     recorder: Recorder,
     indicator: &Indicator,
     fb: &Feedback,
 ) -> Result<()> {
+    let (cfg, dirs) = (st.cfg, st.dirs);
     let t_start = Instant::now();
     let loader: JoinHandle<(Result<Engine>, Duration)> = {
         let (model, threads) = (cfg.model.clone(), cfg.threads);
@@ -166,23 +200,17 @@ fn record(
     let listener = listener.try_clone().ctx(|| "cloning the control socket".into())?;
     thread::spawn(move || ipc::serve(&listener, &tx));
 
-    let mut keys = KeyMachine::new(pressed_ms, cfg.lock_ms);
+    let mut keys = KeyMachine::new(st.pressed_ms, cfg.lock_ms);
     let deadline = t_start + Duration::from_secs(cfg.max_seconds);
+    let mut pending = st.pending_release.map(Msg::Release);
     loop {
-        let msg = rx.recv_timeout(deadline.saturating_duration_since(Instant::now()));
-        match msg {
-            Ok(Msg::Press) => {
-                keys.press();
-            }
-            Ok(Msg::Release) => match keys.release(now_ms()) {
-                Action::None => {}
-                Action::Lock => {
-                    indicator.status().set_locked(true);
-                    fb.beeper.play(Beep::Lock);
-                    fb.notifier.show("● Recording (locked). Press again to finish.", 0);
-                }
-                Action::Finish => break,
-            },
+        let msg = match pending.take() {
+            Some(m) => Ok(m),
+            None => rx.recv_timeout(deadline.saturating_duration_since(Instant::now())),
+        };
+        let action = match msg {
+            Ok(Msg::Press(t)) => keys.press(t),
+            Ok(Msg::Release(t)) => keys.release(t),
             Ok(Msg::Cancel) => {
                 drop(recorder);
                 fb.beeper.play(Beep::Error);
@@ -191,18 +219,37 @@ fn record(
             }
             Err(RecvTimeoutError::Timeout) => {
                 eprintln!("walkie: reached MAX_SECONDS={}, finishing", cfg.max_seconds);
-                break;
+                Action::Finish
             }
-            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Disconnected) => Action::Finish,
+        };
+        match action {
+            Action::None => {}
+            Action::Lock => {
+                indicator.status().set_locked(true);
+                fb.beeper.play(Beep::Lock);
+                fb.notifier.show("● Recording (locked). Press again to finish.", 0);
+            }
+            Action::Finish => break,
         }
     }
     let released = Instant::now();
     // A new press from here on starts a new session.
-    let _ = fs::remove_file(ipc::socket_path(&dirs.run));
+    {
+        let _lock = ipc::Lock::acquire(&dirs.run)?;
+        let _ = fs::remove_file(ipc::socket_path(&dirs.run));
+        indicator.status().set_released();
+    }
 
     thread::sleep(Duration::from_millis(cfg.tail_ms));
     let first_audio_ms = recorder.first_audio_ms();
+    let mic_error = recorder.error();
     let pcm = recorder.stop();
+    if first_audio_ms.is_none() && std::env::var_os("WALKIE_TEST_WAV").is_none() {
+        return Err(Error::Audio(
+            mic_error.unwrap_or_else(|| "no audio arrived from the microphone; is a default source set?".into()),
+        ));
+    }
     indicator.status().set_phase(Phase::Transcribing);
     fb.beeper.play(Beep::Stop);
     fb.notifier.show("… Transcribing", 0);
@@ -217,7 +264,7 @@ fn record(
         out = text::digits(&out);
     }
     if !cfg.postproc.is_empty() && !out.is_empty() {
-        let (filtered, err) = text::postproc(&cfg.postproc, &out);
+        let (filtered, err) = text::postproc(&cfg.postproc, &out, POSTPROC_TIMEOUT);
         if let Some(err) = err {
             eprintln!("walkie: {err}");
         }
@@ -225,7 +272,7 @@ fn record(
     }
     eprintln!(
         "walkie: press_to_audio_ms={} load_ms={} audio_s={:.2} release_to_text_ms={} {}",
-        first_audio_ms.map_or_else(|| "none".into(), |t| t.saturating_sub(pressed_ms).to_string()),
+        first_audio_ms.map_or_else(|| "none".into(), |t| t.saturating_sub(st.pressed_ms).to_string()),
         load_time.as_millis(),
         pcm.len() as f64 / f64::from(crate::audio::RATE),
         released.elapsed().as_millis(),
@@ -238,6 +285,7 @@ fn record(
     if let Err(e) = history::append(&dirs.state, &out) {
         eprintln!("walkie: {e}");
     }
+    wait_for_newer_session(&dirs.run, t_start + Duration::from_secs(cfg.max_seconds) + WATCHDOG_GRACE / 2);
     output::deliver(cfg, &format!("{out}{}", cfg.trailing))?;
     fb.notifier.show(out, 1500);
     Ok(())

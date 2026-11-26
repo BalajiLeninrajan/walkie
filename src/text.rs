@@ -1,7 +1,8 @@
 //! Turning the model's output into the text that gets typed.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use text2num::{Language, replace_numbers_in_text};
 
@@ -17,26 +18,54 @@ pub fn digits(text: &str) -> String {
     replace_numbers_in_text(text, &Language::english(), 3.0)
 }
 
-/// Runs the user's `POSTPROC` command. On failure the text passes through
-/// unchanged and the error is returned alongside it.
-pub fn postproc(cmd: &str, text: &str) -> (String, Option<String>) {
-    let run = || -> std::io::Result<std::process::Output> {
-        let mut child = Command::new("sh")
-            .args(["-c", cmd])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        child.stdin.take().expect("piped stdin").write_all(text.as_bytes())?;
-        child.wait_with_output()
+/// Runs the user's `POSTPROC` command, killing it after `timeout`. On any
+/// failure the text passes through unchanged and the error comes back
+/// alongside it.
+pub fn postproc(cmd: &str, text: &str, timeout: Duration) -> (String, Option<String>) {
+    match run_filter(cmd, text, timeout) {
+        Ok(out) => (normalize(&out), None),
+        Err(e) => (text.to_owned(), Some(format!("POSTPROC: {e}"))),
+    }
+}
+
+fn run_filter(cmd: &str, text: &str, timeout: Duration) -> Result<String, String> {
+    let mut child = Command::new("sh")
+        .args(["-c", cmd])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not run: {e}"))?;
+    // Transcripts are far below the pipe buffer size, so this can't block.
+    let _ = child.stdin.take().expect("piped stdin").write_all(text.as_bytes());
+    let drain = |mut r: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = r.read_to_end(&mut buf);
+            String::from_utf8_lossy(&buf).into_owned()
+        })
     };
-    match run() {
-        Ok(out) if out.status.success() => (normalize(&String::from_utf8_lossy(&out.stdout)), None),
-        Ok(out) => (
-            text.to_owned(),
-            Some(format!("POSTPROC exited with {}: {}", out.status, String::from_utf8_lossy(&out.stderr).trim())),
-        ),
-        Err(e) => (text.to_owned(), Some(format!("POSTPROC failed to run: {e}"))),
+    let stdout = drain(Box::new(child.stdout.take().expect("piped stdout")));
+    let stderr = drain(Box::new(child.stderr.take().expect("piped stderr")));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait().map_err(|e| e.to_string())? {
+            Some(status) => break status,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                // The reader threads may stay blocked on a grandchild that
+                // kept the pipes open; the session exits soon anyway.
+                return Err(format!("timed out after {} s", timeout.as_secs()));
+            }
+            None => std::thread::sleep(Duration::from_millis(5)),
+        }
+    };
+    let out = stdout.join().unwrap_or_default();
+    if status.success() {
+        Ok(out)
+    } else {
+        Err(format!("exited with {status}: {}", stderr.join().unwrap_or_default().trim()))
     }
 }
 
@@ -66,9 +95,20 @@ mod tests {
 
     #[test]
     fn postproc_filters_and_falls_back() {
-        assert_eq!(postproc("tr a-z A-Z", "hello"), ("HELLO".to_owned(), None));
-        let (out, err) = postproc("exit 3", "hello");
+        let t = Duration::from_secs(5);
+        assert_eq!(postproc("tr a-z A-Z", "hello", t), ("HELLO".to_owned(), None));
+        let (out, err) = postproc("echo oops >&2; exit 3", "hello", t);
         assert_eq!(out, "hello");
-        assert!(err.unwrap().contains("exit status: 3"));
+        let err = err.unwrap();
+        assert!(err.contains("exit status: 3") && err.contains("oops"), "{err}");
+    }
+
+    #[test]
+    fn postproc_hang_is_killed() {
+        let start = Instant::now();
+        let (out, err) = postproc("exec sleep 30", "hello", Duration::from_millis(200));
+        assert_eq!(out, "hello");
+        assert!(err.unwrap().contains("timed out"));
+        assert!(start.elapsed() < Duration::from_secs(5));
     }
 }

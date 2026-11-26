@@ -44,11 +44,13 @@ pub fn now_ms() -> u64 {
 }
 
 fn main() -> ExitCode {
+    // When kanata ran us: key press and release times are stamped here.
+    let entered_ms = ipc::mono_ms();
     // SAFETY: first thing in main, before any thread exists.
     unsafe { session_env::fill() };
     let dirs = Dirs::from_env();
     let cmd = std::env::args().nth(1).unwrap_or_default();
-    match dispatch(&cmd, &dirs) {
+    match dispatch(&cmd, &dirs, entered_ms) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("walkie: {e}");
@@ -61,15 +63,13 @@ fn main() -> ExitCode {
     }
 }
 
-fn dispatch(cmd: &str, dirs: &Dirs) -> Result<ExitCode> {
+fn dispatch(cmd: &str, dirs: &Dirs, entered_ms: u64) -> Result<ExitCode> {
     match cmd {
         "start" => {
             let (cfg, warnings) = Config::load(dirs)?;
-            session::start(&cfg, dirs, &warnings)?;
+            session::start(&cfg, dirs, &warnings, entered_ms)?;
         }
-        "stop" => {
-            ipc::send(&dirs.run, Msg::Release)?;
-        }
+        "stop" => ipc::release(&dirs.run, entered_ms)?,
         "cancel" => {
             ipc::send(&dirs.run, Msg::Cancel)?;
         }

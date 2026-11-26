@@ -20,10 +20,15 @@
 //! every 40 ms while recording and every 250 ms otherwise while a session
 //! runs; a reader can treat a non-idle state older than ~2 s as stale (the
 //! session died). The file is left in place, as `idle`, between dictations.
+//!
+//! Sessions can overlap: a new press while the last one is still
+//! transcribing starts a second session. The file then belongs to the newer
+//! one; the older one stops writing as soon as it sees a live socket that
+//! isn't its own.
 
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::FileExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::thread::JoinHandle;
@@ -86,12 +91,22 @@ pub struct Status {
     /// Peak RMS since the last write, as `f32` bits. Positive floats order
     /// the same as their bit patterns, so `fetch_max` works on the bits.
     peak_rms: AtomicU32,
+    /// Set once this session has given up its socket (after the release).
+    released: AtomicBool,
     stop: AtomicBool,
 }
 
 impl Status {
     pub fn set_phase(&self, p: Phase) {
         self.phase.store(p as u8, Ordering::Relaxed);
+    }
+
+    pub fn set_released(&self) {
+        self.released.store(true, Ordering::Relaxed);
+    }
+
+    pub fn released(&self) -> bool {
+        self.released.load(Ordering::Relaxed)
     }
 
     pub fn set_locked(&self, l: bool) {
@@ -112,7 +127,21 @@ impl Status {
 pub struct Indicator {
     file: Arc<File>,
     status: Arc<Status>,
+    socket: PathBuf,
     thread: Option<JoinHandle<()>>,
+}
+
+/// True once a newer session owns the state file: this one has released its
+/// socket and a socket exists again.
+fn superseded(status: &Status, socket: &Path) -> bool {
+    status.released() && socket.exists()
+}
+
+/// Writes `idle` without a running session. The session watchdog uses it.
+pub fn force_idle(run_dir: &Path) {
+    if let Ok(f) = OpenOptions::new().write(true).open(run_dir.join("state")) {
+        let _ = f.write_at(&format_record(Phase::Idle, 0.0, false), 0);
+    }
 }
 
 impl Indicator {
@@ -126,14 +155,15 @@ impl Indicator {
             .ctx(|| format!("opening {}", path.display()))?;
         file.set_len(RECORD_LEN as u64).ctx(|| format!("resizing {}", path.display()))?;
         let file = Arc::new(file);
+        let socket = crate::ipc::socket_path(run_dir);
         let thread = {
-            let (file, status) = (Arc::clone(&file), Arc::clone(&status));
+            let (file, status, socket) = (Arc::clone(&file), Arc::clone(&status), socket.clone());
             std::thread::Builder::new()
                 .name("indicator".into())
-                .spawn(move || writer(&file, &status))
+                .spawn(move || writer(&file, &status, &socket))
                 .ctx(|| "starting the indicator thread".into())?
         };
-        Ok(Self { file, status, thread: Some(thread) })
+        Ok(Self { file, status, socket, thread: Some(thread) })
     }
 
     pub fn status(&self) -> &Arc<Status> {
@@ -148,11 +178,13 @@ impl Drop for Indicator {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
-        let _ = self.file.write_at(&format_record(Phase::Idle, 0.0, false), 0);
+        if !superseded(&self.status, &self.socket) {
+            let _ = self.file.write_at(&format_record(Phase::Idle, 0.0, false), 0);
+        }
     }
 }
 
-fn writer(file: &File, status: &Status) {
+fn writer(file: &File, status: &Status, socket: &Path) {
     let mut since_write = Duration::MAX;
     let tick = Duration::from_millis(40);
     let mut last = [0u8; RECORD_LEN];
@@ -161,7 +193,8 @@ fn writer(file: &File, status: &Status) {
         let level = meter(status.take_rms());
         let rec = format_record(phase, level, status.locked.load(Ordering::Relaxed));
         // Write on every change, and at least every 250 ms as a heartbeat.
-        if rec != last || since_write >= Duration::from_millis(250) {
+        let due = rec != last || since_write >= Duration::from_millis(250);
+        if due && !superseded(status, socket) {
             let _ = file.write_at(&rec, 0);
             last = rec;
             since_write = Duration::ZERO;
