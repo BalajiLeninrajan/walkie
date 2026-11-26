@@ -21,6 +21,14 @@ fn main() {
     println!("cargo:rerun-if-env-changed=TRANSCRIBE_DIR");
     println!("cargo:rerun-if-env-changed=WALKIE_GGML_NATIVE");
     println!("cargo:rerun-if-changed=csrc");
+    // Rebuild transcribe.cpp when the submodule moves or its sources change.
+    for sub in ["CMakeLists.txt", "include", "src", "ggml"] {
+        println!("cargo:rerun-if-changed={}", tcpp.join(sub).display());
+    }
+    let gitlink = manifest.join(".git/modules/vendor/transcribe.cpp/HEAD");
+    if gitlink.exists() {
+        println!("cargo:rerun-if-changed={}", gitlink.display());
+    }
 
     let mut cfg = cmake::Config::new(&tcpp);
     cfg.profile("Release")
