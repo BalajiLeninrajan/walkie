@@ -1,0 +1,87 @@
+# Push a tag vX.Y.Z matching Cargo.toml's version to publish a release. Run it
+# by hand (workflow_dispatch) for a dry run: it builds the same tarball and
+# uploads it as an artifact of the run instead of releasing.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # The oldest Fedora walkie supports, so glibc and libpipewire match it.
+    container: fedora:43
+    steps:
+      - name: Install build dependencies
+        run: >-
+          dnf install -y --setopt=install_weak_deps=False
+          git gcc gcc-c++ cmake make pkgconf-pkg-config pipewire-devel
+          cargo rust binutils tar gzip
+
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          # The release notes list the commits since the previous tag.
+          fetch-depth: 0
+
+      - name: Build and package
+        id: dist
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            scripts/dist.sh "${GITHUB_REF_NAME#v}"
+          else
+            scripts/dist.sh
+          fi
+          echo "version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)" >>"$GITHUB_OUTPUT"
+
+      - name: Write release notes
+        run: |
+          prev=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
+          if [ "$GITHUB_EVENT_NAME" = push ]; then head=$GITHUB_REF_NAME; else head=$GITHUB_SHA; fi
+          {
+            echo "## Changes"
+            echo
+            git log --no-merges --format='- %s (%h)' "${prev:+$prev..}HEAD"
+            if [ -n "$prev" ]; then
+              echo
+              echo "Full changelog: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/$prev...$head"
+            fi
+          } >dist/notes.md
+          cat dist/notes.md
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: walkie-${{ steps.dist.outputs.version }}
+          path: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+            dist/notes.md
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME"
+          --repo "$GITHUB_REPOSITORY"
+          --verify-tag
+          --title "walkie $GITHUB_REF_NAME"
+          --notes-file dist/notes.md
+          dist/*.tar.gz dist/SHA256SUMS
