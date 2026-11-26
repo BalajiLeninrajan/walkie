@@ -207,6 +207,8 @@ int walkie_pw_capture_start(struct walkie_pw * pw, walkie_pcm_cb cb, void * user
                                 PW_STREAM_FLAG_AUTOCONNECT | PW_STREAM_FLAG_MAP_BUFFERS, params, 1);
         if (res < 0) {
             set_error(pw, "capture connect", spa_strerror(res));
+            pw_stream_destroy(pw->capture);  // don't keep a stream that points at the caller's data
+            pw->capture = NULL;
         }
     } else {
         set_error(pw, "capture stream", strerror(errno));
