@@ -218,10 +218,11 @@ fn record(
         out = filtered;
     }
     eprintln!(
-        "walkie: load_ms={} audio_s={:.2} release_to_text_ms={}",
+        "walkie: load_ms={} audio_s={:.2} release_to_text_ms={} {}",
         load_time.as_millis(),
         pcm.len() as f64 / f64::from(crate::audio::RATE),
-        released.elapsed().as_millis()
+        released.elapsed().as_millis(),
+        resource_usage()
     );
     if out.is_empty() {
         fb.notifier.show("(no speech)", 1000);
@@ -233,4 +234,20 @@ fn record(
     output::deliver(cfg, &format!("{out}{}", cfg.trailing))?;
     fb.notifier.show(out, 1500);
     Ok(())
+}
+
+/// Peak RSS and CPU time so far, for the log line the benchmarks read.
+fn resource_usage() -> String {
+    let hwm = fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| s.lines().find_map(|l| l.strip_prefix("VmHWM:").map(|v| v.trim().to_owned())))
+        .unwrap_or_default();
+    // SAFETY: getrusage fills the zeroed struct we pass.
+    let ru = unsafe {
+        let mut ru: libc::rusage = std::mem::zeroed();
+        libc::getrusage(libc::RUSAGE_SELF, &raw mut ru);
+        ru
+    };
+    let ms = |t: libc::timeval| t.tv_sec * 1000 + t.tv_usec / 1000;
+    format!("peak_rss={} cpu_ms={}", hwm.replace(' ', ""), ms(ru.ru_utime) + ms(ru.ru_stime))
 }
