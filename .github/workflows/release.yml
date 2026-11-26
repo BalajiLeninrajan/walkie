@@ -29,6 +29,11 @@ jobs:
           # The release notes list the commits since the previous tag.
           fetch-depth: 0
 
+      # The runner owns the workspace, not the container's root, so git refuses
+      # it as dubious. checkout trusts it only for its own step.
+      - name: Trust the workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Build and package
         id: dist
         run: |

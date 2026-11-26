@@ -17,6 +17,8 @@ if [ "$version" != "$crate" ]; then
     exit 1
 fi
 name=walkie-$version-x86_64-linux
+# Before the build, so a git that can't read the repo fails in seconds.
+epoch=${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}
 
 # ggml for any x86-64 with AVX2, FMA and F16C, not for the build machine.
 WALKIE_GGML_NATIVE=0 CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-4} cargo build --release --locked
@@ -32,7 +34,6 @@ rm -rf dist
 mkdir -p "dist/$name"
 cp "$bin" "dist/$name/walkie"
 cp -r plugin install.sh README.md LICENSE "dist/$name/"
-epoch=${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}
 tar -C dist --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$epoch" -cf - "$name" |
     gzip -9n >"dist/$name.tar.gz"
 rm -rf "dist/${name:?}"
