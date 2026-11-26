@@ -48,9 +48,6 @@ fn main() {
     for dir in ["src", "ggml/src"] {
         println!("cargo:rustc-link-search=native={}", out.join(dir).display());
     }
-    for lib in ["transcribe", "ggml", "ggml-cpu", "ggml-base"] {
-        println!("cargo:rustc-link-lib=static={lib}");
-    }
 
     cc::Build::new()
         .file("csrc/engine.c")
@@ -62,6 +59,7 @@ fn main() {
 
     let pw = pkg_config::Config::new()
         .atleast_version("0.3.40")
+        .cargo_metadata(false)
         .probe("libpipewire-0.3")
         .expect("libpipewire-0.3 development files (Fedora: pipewire-devel)");
     let mut pwc = cc::Build::new();
@@ -71,6 +69,19 @@ fn main() {
     }
     pwc.compile("walkie_pw");
 
-    // ggml is C++; link its runtime after the static archives.
+    // Each library goes after the ones that use it. GNU ld, which Fedora's
+    // rustc links with, only takes what earlier objects need from an archive,
+    // and with --as-needed drops a shared library nothing before it uses.
+    // `compile` above has already put the two shims first.
+    for lib in ["transcribe", "ggml", "ggml-cpu", "ggml-base"] {
+        println!("cargo:rustc-link-lib=static={lib}");
+    }
+    for dir in &pw.link_paths {
+        println!("cargo:rustc-link-search=native={}", dir.display());
+    }
+    for lib in &pw.libs {
+        println!("cargo:rustc-link-lib={lib}");
+    }
+    // ggml is C++.
     println!("cargo:rustc-link-lib=dylib=stdc++");
 }
