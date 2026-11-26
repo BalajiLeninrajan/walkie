@@ -86,7 +86,10 @@ PluginComponent {
         path: root.statePath
         watchChanges: true
         printErrors: false
-        onFileChanged: reload()
+        // The record is 64 bytes on tmpfs, so a blocking read is cheaper than a
+        // thread hop. callLater folds the double events one write can raise.
+        blockLoading: true
+        onFileChanged: Qt.callLater(reload)
         onLoaded: {
             retryTimer.stop();
             root.applyRecord(text());
