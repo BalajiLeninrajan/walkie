@@ -20,7 +20,7 @@ name=walkie-$version-x86_64-linux
 # Before the build, so a git that can't read the repo fails in seconds.
 epoch=${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}
 
-# ggml for any x86-64 with AVX2, FMA and F16C, not for the build machine.
+# ggml for any x86-64 with AVX2, FMA, F16C and BMI2, not for the build machine.
 WALKIE_GGML_NATIVE=0 CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-4} cargo build --release --locked
 bin=target/release/walkie
 # A zmm register means AVX-512 code, which would crash on CPUs without it.

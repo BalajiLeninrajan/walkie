@@ -3,8 +3,8 @@
 //!
 //! Environment:
 //! - `TRANSCRIBE_DIR`: use this transcribe.cpp checkout instead of the submodule.
-//! - `WALKIE_GGML_NATIVE=0`: build ggml for any x86-64 with AVX2/FMA/F16C
-//!   (Haswell or newer) instead of `-march=native`. Use it when the binary
+//! - `WALKIE_GGML_NATIVE=0`: build ggml for any x86-64 with SSE4.2, AVX2, FMA,
+//!   F16C and BMI2 (Haswell or newer) instead of `-march=native`. Use it when the binary
 //!   will run on a different CPU than the one that builds it.
 
 use std::env;
@@ -38,10 +38,11 @@ fn main() {
         .define("BUILD_SHARED_LIBS", "OFF")
         .build_target("transcribe");
     if env::var("WALKIE_GGML_NATIVE").is_ok_and(|v| v == "0") {
-        for (k, v) in
-            [("GGML_NATIVE", "OFF"), ("GGML_AVX", "ON"), ("GGML_AVX2", "ON"), ("GGML_FMA", "ON"), ("GGML_F16C", "ON")]
-        {
-            cfg.define(k, v);
+        // ggml turns all of these on by default once GGML_NATIVE is off. They
+        // are spelled out so the CPU floor is a choice made here.
+        cfg.define("GGML_NATIVE", "OFF");
+        for k in ["GGML_SSE42", "GGML_AVX", "GGML_AVX2", "GGML_BMI2", "GGML_FMA", "GGML_F16C"] {
+            cfg.define(k, "ON");
         }
     }
     let out = cfg.build().join("build");

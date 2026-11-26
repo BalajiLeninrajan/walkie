@@ -24,7 +24,7 @@ A tap shorter than `LOCK_MS` locks the recording instead, for hands-free dictati
 
 ## Install
 
-walkie runs on Fedora 43 and 44 on x86_64, on any CPU with AVX2, FMA and F16C (Haswell or newer). As your user:
+walkie runs on Fedora 43 and 44 on x86_64, on any CPU with AVX2, FMA, F16C and BMI2 (Haswell or newer). As your user:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/BalajiLeninrajan/walkie/main/install.sh | sh
@@ -66,7 +66,7 @@ In a checkout, `install.sh` without `--from-source` still installs the latest re
 
 The model and plugin steps are the same as above.
 
-ggml is compiled with `-march=native` for the machine that builds it. To build a binary for another machine, set `WALKIE_GGML_NATIVE=0`, which targets any x86-64 CPU with AVX2, FMA and F16C. Release binaries are built this way.
+ggml is compiled with `-march=native` for the machine that builds it. To build a binary for another machine, set `WALKIE_GGML_NATIVE=0`, which targets any x86-64 CPU with SSE4.2, AVX2, FMA, F16C and BMI2. Release binaries are built this way.
 
 ## Kanata
 
