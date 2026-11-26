@@ -2,10 +2,14 @@
 
 #![allow(dead_code)] // wired up by the session in a later commit
 
+mod audio;
 mod config;
+mod engine;
 mod error;
 mod history;
+mod indicator;
 mod machine;
+mod sound;
 mod text;
 
 /// Milliseconds since the Unix epoch.
