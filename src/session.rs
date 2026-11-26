@@ -76,7 +76,12 @@ impl StartLock {
 /// Starts a new session, and points stdin/stdout at /dev/null and stderr
 /// at `run/log` so the key handler that started us isn't held open.
 fn detach(dirs: &Dirs) {
-    let log = File::create(dirs.run.join("log")).or_else(|_| File::create("/dev/null"));
+    // Truncate, then append: a session still transcribing keeps writing
+    // whole lines to the same file instead of leaving a hole in it.
+    let path = dirs.run.join("log");
+    let log = fs::write(&path, "")
+        .and_then(|()| fs::OpenOptions::new().append(true).open(&path))
+        .or_else(|_| File::create("/dev/null"));
     let null = File::open("/dev/null");
     // SAFETY: setsid/dup2 on fds we own; failures leave the defaults in place.
     unsafe {
