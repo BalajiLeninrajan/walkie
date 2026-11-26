@@ -125,9 +125,8 @@ else
     fi
     bin_src=$src/walkie
 fi
-install -Dm755 "$bin_src" "$BIN/walkie"
 
-# 2. model
+# 2. model, before anything is replaced: a failed download leaves the old install as it was
 get() { # get REPO FILE SHA256
     out=$DATA/models/$2
     mkdir -p "$DATA/models"
@@ -144,13 +143,15 @@ get() { # get REPO FILE SHA256
 get parakeet-tdt_ctc-110m parakeet-tdt_ctc-110m-Q8_0.gguf 7dd44c74a331d788a4e5f8b16913b3feb29ced22cf5613aad0e0f6cd30516296
 [ "$unified" = 1 ] && get parakeet-unified-en-0.6b parakeet-unified-en-0.6b-Q8_0.gguf ""
 
-# 3. DMS plugin: DMS 2.x reads ~/.config/dms, 1.x read ~/.config/DankMaterialShell
+# 3. the binary and the DMS plugin, together.
+# DMS 2.x reads ~/.config/dms, 1.x read ~/.config/DankMaterialShell
 if [ -d "$CONF/dms" ] || [ ! -d "$CONF/DankMaterialShell" ]; then
     plugins=$CONF/dms/plugins
 else
     plugins=$CONF/DankMaterialShell/plugins
 fi
 [ -f "$src/plugin/plugin.json" ] || die "$src/plugin is missing"
+install -Dm755 "$bin_src" "$BIN/walkie"
 mkdir -p "$plugins"
 rm -rf "$plugins/walkie"
 cp -r "$src/plugin" "$plugins/walkie"
