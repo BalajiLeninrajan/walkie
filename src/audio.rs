@@ -129,8 +129,9 @@ impl Recorder {
         Ok(Self { sink, source: Source::PipeWire(pw) })
     }
 
-    /// Feeds a 16 kHz mono WAV in 100 ms chunks at real-time pace, like
-    /// `pw-record` would. Used by the benchmarks; set `WALKIE_TEST_WAV`.
+    /// Feeds a 16 kHz mono WAV in 100 ms chunks at real-time pace, then
+    /// silence until stopped, like a microphone would. Used by the
+    /// benchmarks; set `WALKIE_TEST_WAV`.
     pub fn from_wav(path: &Path, status: Arc<Status>) -> Result<Self> {
         let bytes = std::fs::read(path).map_err(|e| Error::Audio(format!("{}: {e}", path.display())))?;
         let pcm = sound::parse_wav(&bytes)
@@ -142,7 +143,9 @@ impl Recorder {
             let (sink, stop) = (Arc::clone(&sink), Arc::clone(&stop));
             std::thread::spawn(move || {
                 let t0 = Instant::now();
-                for (i, chunk) in pcm.samples.chunks(RATE as usize / 10).enumerate() {
+                let silence = [0i16; RATE as usize / 10];
+                let chunks = pcm.samples.chunks(RATE as usize / 10).chain(std::iter::repeat(&silence[..]));
+                for (i, chunk) in chunks.enumerate() {
                     if stop.load(Ordering::Relaxed) {
                         break;
                     }
