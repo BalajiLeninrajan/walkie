@@ -3,7 +3,7 @@
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::path::Path;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -80,14 +80,21 @@ impl Drop for PipeWire {
 pub struct Sink {
     samples: Mutex<Vec<i16>>,
     status: Arc<Status>,
+    /// Unix ms when the first samples arrived, 0 before that.
+    first_ms: AtomicU64,
 }
 
 impl Sink {
+    fn new(samples: Vec<i16>, status: Arc<Status>) -> Self {
+        Self { samples: Mutex::new(samples), status, first_ms: AtomicU64::new(0) }
+    }
+
     fn push(&self, chunk: &[i16]) {
         if chunk.is_empty() {
             return;
         }
         let sum: f64 = chunk.iter().map(|&s| f64::from(s) * f64::from(s)).sum();
+        let _ = self.first_ms.compare_exchange(0, crate::now_ms(), Ordering::Relaxed, Ordering::Relaxed);
         let rms = (sum / chunk.len() as f64).sqrt() / 32768.0;
         self.status.report_rms(rms as f32);
         self.samples.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend_from_slice(chunk);
@@ -119,7 +126,7 @@ pub struct Recorder {
 impl Recorder {
     /// Starts recording from the default PipeWire source.
     pub fn pipewire(pw: Arc<PipeWire>, status: Arc<Status>) -> Result<Self> {
-        let sink = Arc::new(Sink { samples: Mutex::new(Vec::with_capacity(RATE as usize * 30)), status });
+        let sink = Arc::new(Sink::new(Vec::with_capacity(RATE as usize * 30), status));
         let user = Arc::as_ptr(&sink).cast_mut().cast::<c_void>();
         // SAFETY: `user` stays valid while `self.sink` lives, and stop()/drop
         // end the capture before the Sink can be freed.
@@ -137,7 +144,7 @@ impl Recorder {
         let pcm = sound::parse_wav(&bytes)
             .filter(|p| p.rate == RATE)
             .ok_or_else(|| Error::Audio(format!("{}: need a 16 kHz 16-bit WAV", path.display())))?;
-        let sink = Arc::new(Sink { samples: Mutex::new(Vec::new()), status });
+        let sink = Arc::new(Sink::new(Vec::new(), status));
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
             let (sink, stop) = (Arc::clone(&sink), Arc::clone(&stop));
@@ -156,6 +163,11 @@ impl Recorder {
             })
         };
         Ok(Self { sink, source: Source::File { stop, thread: Some(thread) } })
+    }
+
+    /// Unix ms when the first audio arrived, if any has.
+    pub fn first_audio_ms(&self) -> Option<u64> {
+        Some(self.sink.first_ms.load(Ordering::Relaxed)).filter(|&t| t != 0)
     }
 
     /// Stops recording and returns the audio as floats in -1..1.

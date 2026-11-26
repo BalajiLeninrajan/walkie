@@ -201,6 +201,7 @@ fn record(
     let _ = fs::remove_file(ipc::socket_path(&dirs.run));
 
     thread::sleep(Duration::from_millis(cfg.tail_ms));
+    let first_audio_ms = recorder.first_audio_ms();
     let pcm = recorder.stop();
     indicator.status().set_phase(Phase::Transcribing);
     fb.beeper.play(Beep::Stop);
@@ -223,7 +224,8 @@ fn record(
         out = filtered;
     }
     eprintln!(
-        "walkie: load_ms={} audio_s={:.2} release_to_text_ms={} {}",
+        "walkie: press_to_audio_ms={} load_ms={} audio_s={:.2} release_to_text_ms={} {}",
+        first_audio_ms.map_or_else(|| "none".into(), |t| t.saturating_sub(pressed_ms).to_string()),
         load_time.as_millis(),
         pcm.len() as f64 / f64::from(crate::audio::RATE),
         released.elapsed().as_millis(),
